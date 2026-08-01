@@ -21,6 +21,7 @@ import { Card } from 'baseui/card'
 type TrainerProps = {
   dataset: Dataset | undefined
   model: ModelT | undefined
+  simplified?: boolean
 }
 
 type LossPoint = { step: number; loss: number }
@@ -31,13 +32,24 @@ const trainDataSeriesId = 'Train Loss'
 const testDataSeriesId = 'Test Loss'
 
 export function Trainer(props: TrainerProps) {
-  const { model, dataset } = props
+  const { model, dataset, simplified = false } = props
 
-  const [batchSize, setBatchSize] = React.useState<number>(8)
-  const [maxEpochs, setMaxEpochs] = React.useState<number>(2000)
-  const [learningRate, setLearningRate] = React.useState<string>('0.001')
-  const [evalInterval, setEvalInterval] = React.useState<number>(200)
-  const [evalIterations, setEvalIterations] = React.useState<number>(50)
+  // Training is dispatch-bound rather than throughput-bound on these small
+  // models: a step is a few hundred tiny GPU kernels, and the CPU-side cost of
+  // encoding them dominates. A larger batch does more work per dispatch for
+  // roughly the same overhead, so it buys a much better loss-per-second.
+  const [batchSize, setBatchSize] = React.useState<number>(256)
+  // At batch 256 each step sees 32x the samples it did at batch 8, so far fewer
+  // steps are needed to see a comparable amount of data: 200 x 256 samples is
+  // several times the old 2000 x 8.
+  const [maxEpochs, setMaxEpochs] = React.useState<number>(200)
+  // Bigger batches give lower-variance gradients, which tolerates (and needs) a
+  // larger step. Scaled roughly with the square root of the batch increase --
+  // linear scaling would suggest ~0.03, which reliably diverges for Adam on a
+  // model this small.
+  const [learningRate, setLearningRate] = React.useState<string>('0.005')
+  const [evalInterval, setEvalInterval] = React.useState<number>(50)
+  const [evalIterations, setEvalIterations] = React.useState<number>(25)
 
   const [batchSizeErr, setBatchSizeErr] = React.useState<string>()
   const [maxEpochsErr, setMaxEpochsErr] = React.useState<string>()
@@ -68,6 +80,10 @@ export function Trainer(props: TrainerProps) {
     learningRateErr ||
     evalIntervalErr ||
     evalIterationsErr
+
+  const effectiveMaxEpochs = simplified ? 150 : maxEpochs
+  const effectiveEvalInterval = simplified ? 25 : evalInterval
+  const effectiveEvalIterations = simplified ? 10 : evalIterations
 
   const onStartTraining = () => {
     isStopRequestedRef.current = false
@@ -116,9 +132,9 @@ export function Trainer(props: TrainerProps) {
           },
           params: {
             learningRate: learningRateNum,
-            evalInterval,
-            evalIterations,
-            maxIters: maxEpochs,
+            evalInterval: effectiveEvalInterval,
+            evalIterations: effectiveEvalIterations,
+            maxIters: effectiveMaxEpochs,
             batchSize,
             blockSize: model.params.blockSize,
           },
@@ -213,7 +229,9 @@ export function Trainer(props: TrainerProps) {
     </FadeIn>
   )
 
-  const isTrainingAllowed = !formError && !isTraining && !isStopRequested
+  const hasTrainingData = Boolean(model && dataset && dataset.dataSize)
+  const isTrainingAllowed =
+    !formError && !isTraining && !isStopRequested && hasTrainingData
 
   const isFormDisabled = isTraining || isStopRequested
 
@@ -339,12 +357,64 @@ export function Trainer(props: TrainerProps) {
     </FadeIn>
   )
 
+  const simplifiedTraining = (
+    <FadeIn>
+      <Block>
+        <Notification kind="info">
+          Add your own text above, then train the model to learn its character patterns.
+          Your text stays in this browser.
+        </Notification>
+
+        {!hasTrainingData && (
+          <Block
+            marginTop="scale400"
+            color="contentSecondary"
+            $style={{ fontSize: '14px', lineHeight: '20px' }}
+          >
+            Enter some custom text before starting training.
+          </Block>
+        )}
+
+        <Block display="flex" justifyContent="center" marginTop="scale500">
+          <Block
+            display="flex"
+            flexDirection="row"
+            gridGap="scale300"
+            flex={[1, 1, 0.5]}
+          >
+            {isTraining && (
+              <Button
+                onClick={onStopTraining}
+                kind={KIND.secondary}
+                disabled={isStopRequested}
+                isLoading={isStopRequested}
+                startEnhancer={() => <IoStop />}
+                overrides={{ Root: { style: { width: '100%' } } }}
+              >
+                Stop
+              </Button>
+            )}
+            <Button
+              onClick={onStartTraining}
+              disabled={!isTrainingAllowed}
+              startEnhancer={() => <IoPlay />}
+              isLoading={isTraining}
+              overrides={{ Root: { style: { width: '100%' } } }}
+            >
+              Train on my text
+            </Button>
+          </Block>
+        </Block>
+      </Block>
+    </FadeIn>
+  )
+
   let trainTimeSoFar: number | undefined = undefined
   let trainTimeLeft: number | undefined = undefined
   if (trainStartTime && epoch > 0) {
     trainTimeSoFar = (trainStopTime || performance.now()) - trainStartTime
     const timePerEpoch = Math.ceil(trainTimeSoFar / epoch)
-    const remainingEpochs = maxEpochs - epoch
+    const remainingEpochs = effectiveMaxEpochs - epoch
     trainTimeLeft = remainingEpochs * timePerEpoch
   }
 
@@ -354,7 +424,7 @@ export function Trainer(props: TrainerProps) {
         <ProgressBar
           value={epoch}
           minValue={0}
-          maxValue={maxEpochs}
+          maxValue={effectiveMaxEpochs}
           size={PROGRESS_BAR_SIZE.large}
           showLabel
           overrides={{ BarContainer: { style: { marginLeft: 0, marginRight: 0 } } }}
@@ -367,7 +437,9 @@ export function Trainer(props: TrainerProps) {
                 <LabelSmall $style={{ lineHeight: '18px' }}>{value}</LabelSmall>
               </Block>
               <Block marginLeft="5px">
-                <LabelSmall $style={{ color: 'grey' }}>/&nbsp;{maxEpochs}</LabelSmall>
+                <LabelSmall $style={{ color: 'grey' }}>
+                  /&nbsp;{effectiveMaxEpochs}
+                </LabelSmall>
               </Block>
               <Block marginLeft="20px">
                 <Clock timeMs={trainTimeSoFar} animated={isTraining} />
@@ -461,8 +533,12 @@ export function Trainer(props: TrainerProps) {
                 pointLabel="data.yFormatted"
                 tooltip={CustomTooltip}
                 pointLabelYOffset={-12}
-                enableTouchCrosshair={true}
-                useMesh={true}
+                // With a single data point per series the mesh is degenerate:
+                // the hit-test returns nothing and nivo's tooltip handler then
+                // throws on `point.x`. Only enable interaction once there are
+                // enough points to build a real mesh.
+                enableTouchCrosshair={trainLosses.length > 1}
+                useMesh={trainLosses.length > 1}
                 legends={[
                   {
                     anchor: 'top',
@@ -487,6 +563,35 @@ export function Trainer(props: TrainerProps) {
     </FadeIn>
   )
 
+  const simplifiedProgress = (isTraining || epoch > 0) && (
+    <FadeIn>
+      <Block marginTop="scale700">
+        <ProgressBar
+          value={epoch}
+          minValue={0}
+          maxValue={effectiveMaxEpochs}
+          size={PROGRESS_BAR_SIZE.large}
+          showLabel
+          overrides={{ BarContainer: { style: { marginLeft: 0, marginRight: 0 } } }}
+          getProgressLabel={(value) =>
+            isTraining
+              ? `Learning from your text… ${Math.round(
+                  (value / effectiveMaxEpochs) * 100,
+                )}%`
+              : 'Training complete'
+          }
+        />
+        {!isTraining && epoch > 0 && (
+          <Block marginTop="scale400">
+            <Notification kind="positive">
+              Training is complete. You can generate text in the next step.
+            </Notification>
+          </Block>
+        )}
+      </Block>
+    </FadeIn>
+  )
+
   React.useEffect(() => {
     onFormValidate()
   }, [batchSize, maxEpochs, learningRate, evalInterval, evalIterations])
@@ -494,14 +599,19 @@ export function Trainer(props: TrainerProps) {
   return (
     <Block>
       {loader}
-      {trainingParams}
+      {simplified ? simplifiedTraining : trainingParams}
       {error}
-      {trainingProgress}
+      {simplified ? simplifiedProgress : trainingProgress}
     </Block>
   )
 }
 
-const CustomTooltip = ({ point }: { point: Point }) => (
+const CustomTooltip = ({ point }: { point?: Point }) => {
+  // Defensive: nivo can invoke the tooltip with no point on a degenerate mesh.
+  if (!point?.data) {
+    return null
+  }
+  return (
   <Block
     backgroundColor="white"
     padding="scale200"
@@ -515,4 +625,5 @@ const CustomTooltip = ({ point }: { point: Point }) => (
       {point.data.y as number}
     </LabelXSmall>
   </Block>
-)
+  )
+}

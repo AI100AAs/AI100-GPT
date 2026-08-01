@@ -2,19 +2,19 @@ import React from 'react'
 import { Block } from 'baseui/block'
 import { CONFIG, GPT, Model as ModelT, ModelVariant } from '@gpt/model'
 import { Skeleton } from 'baseui/skeleton'
-import { BackendId } from '../types/playground'
+import { BackendId, DatasetId } from '../types/playground'
 import { Notification } from './shared/notification'
 import { SegmentedControl, Segment } from 'baseui/segmented-control'
 import { FadeIn } from './shared/fade'
 import { Count } from './shared/count'
 import { FormControl } from 'baseui/form-control'
-import { Slider, SliderOverrides } from 'baseui/slider'
 import { FileUploader } from 'baseui/file-uploader'
 import { Button, SIZE, KIND } from 'baseui/button'
 import { RiDownloadLine } from 'react-icons/ri'
 import { useSnackbar } from 'baseui/snackbar'
 import { FaCheck } from 'react-icons/fa'
 import { Card } from 'baseui/card'
+import { MODEL_WEIGHTS_BASE_URL } from '../config/links'
 
 type ModelProps = {
   model: ModelT | undefined
@@ -22,6 +22,8 @@ type ModelProps = {
   vocabSize: number | undefined
   onChange?: (model: ModelT, modelVariant: ModelVariant) => Promise<void>
   onDownloadModelWeights?: () => void
+  showTechnicalDetails?: boolean
+  datasetId?: DatasetId
 }
 
 export function Model(props: ModelProps) {
@@ -31,55 +33,104 @@ export function Model(props: ModelProps) {
     backend,
     vocabSize,
     onDownloadModelWeights = () => {},
+    showTechnicalDetails = false,
+    datasetId,
   } = props
 
   const { enqueue } = useSnackbar()
 
-  const [modelVariant, setModelVariant] = React.useState<ModelVariant>('gpt-pico')
+  const [modelVariant, setModelVariant] = React.useState<ModelVariant>('gpt-nano')
   const [errorMessage, setErrorMessage] = React.useState<string>()
   const [isLoading, setIsLoading] = React.useState<boolean>(false)
   const [paramsCount, setParamsCount] = React.useState<number>()
+  const initializationId = React.useRef(0)
+  const currentDatasetId = React.useRef(datasetId)
+  const currentVocabSize = React.useRef(vocabSize)
 
-  const [nLayer, setNLayer] = React.useState<number>(CONFIG[modelVariant].nLayer)
-  const [nHead, setNHead] = React.useState<number>(CONFIG[modelVariant].nHead)
-  const [nEmbd, setNEmbd] = React.useState<number>(CONFIG[modelVariant].nEmbd)
-  const [blockSize, setBlockSize] = React.useState<number>(CONFIG[modelVariant].blockSize)
+  currentDatasetId.current = datasetId
+  currentVocabSize.current = vocabSize
 
   const onModelInit = async () => {
     onModelChange(modelVariant)
   }
 
   const onModelChange = async (nextModelVariant: ModelVariant) => {
+    const requestId = ++initializationId.current
+    const requestedDatasetId = datasetId
+    const requestedVocabSize = vocabSize
+
     setIsLoading(true)
     setErrorMessage(undefined)
 
     // Let React apply the loading state before proceeding
     setTimeout(async () => {
+      let nextModel: ModelT | undefined
       try {
-        if (!vocabSize) {
+        if (!requestedVocabSize) {
           throw new Error('Vocabulary size is undefined')
         }
 
         const nextModelConfig = CONFIG[nextModelVariant]
-        const nextModel = GPT({
+        nextModel = GPT({
           ...nextModelConfig,
-          vocabSize,
+          vocabSize: requestedVocabSize,
+          tokenIndexShift: requestedDatasetId === 'custom' ? 1 : 0,
         })
         nextModel.build() // Initialize weights
         const { params } = nextModel.summary()
+        const weightsFileName =
+          requestedDatasetId === 'shakespeare'
+            ? MODEL_WEIGHTS[nextModelVariant]
+            : undefined
+        if (weightsFileName && nextModel.setWeights) {
+          const response = await fetch(`${MODEL_WEIGHTS_BASE_URL}${weightsFileName}`)
+          if (!response.ok) {
+            throw new Error(`Could not load ${nextModelVariant} weights: ${response.statusText}`)
+          }
+          const weights = await response.json()
+
+          // Dataset changes can finish while pretrained weights are downloading.
+          // Never apply Shakespeare weights to a model built for a custom vocabulary.
+          if (
+            requestId !== initializationId.current ||
+            currentDatasetId.current !== requestedDatasetId ||
+            currentVocabSize.current !== requestedVocabSize
+          ) {
+            nextModel.dispose?.()
+            return
+          }
+          nextModel.setWeights(weights)
+        }
+
+        if (
+          requestId !== initializationId.current ||
+          currentDatasetId.current !== requestedDatasetId ||
+          currentVocabSize.current !== requestedVocabSize
+        ) {
+          nextModel.dispose?.()
+          return
+        }
 
         await onChange(nextModel, nextModelVariant)
 
         setModelVariant(nextModelVariant)
-        setNLayer(nextModelConfig.nLayer)
-        setNHead(nextModelConfig.nHead)
-        setNEmbd(nextModelConfig.nEmbd)
-        setBlockSize(nextModelConfig.blockSize)
         setParamsCount(params)
+        if (weightsFileName) {
+          enqueue({
+            message: `${MODELS[nextModelVariant]?.label} weights loaded automatically`,
+            startEnhancer: ({ size }) => <FaCheck size={size} />,
+          })
+        }
       } catch (err) {
-        setErrorMessage((err as Error).message)
+        if (requestId === initializationId.current) {
+          setErrorMessage((err as Error).message)
+        }
+        nextModel?.dispose?.()
+      } finally {
+        if (requestId === initializationId.current) {
+          setIsLoading(false)
+        }
       }
-      setIsLoading(false)
     }, 0)
   }
 
@@ -113,9 +164,11 @@ export function Model(props: ModelProps) {
   const loader = isLoading && (
     <Block marginTop="scale300">
       <Block marginBottom="scale200" color="grey" $style={{ fontSize: '12px' }}>
-        Initializing the GPT model (this may block the UI)...
+        {datasetId === 'shakespeare'
+          ? 'Initializing the GPT model and loading its weights...'
+          : 'Preparing the GPT model for your custom text...'}
       </Block>
-      <Skeleton rows={4} height="424px" width="100%" animation autoSizeRows />
+      <Skeleton rows={2} height="160px" width="100%" animation autoSizeRows />
     </Block>
   )
 
@@ -156,57 +209,17 @@ export function Model(props: ModelProps) {
       </FadeIn>
     ) : null
 
-  const readOnlyParams =
-    !isLoading && modelVariant && model ? (
+  const modelDetails =
+    !isLoading && model ? (
       <FadeIn>
-        <Block>
-          <FormControl label="Layers">
-            <Slider
-              value={[nLayer]}
-              min={1}
-              max={12}
-              step={1}
-              persistentThumb
-              marks
-              overrides={sliderOverrides}
-            />
-          </FormControl>
-
-          <FormControl label="Attention Heads">
-            <Slider
-              value={[nHead]}
-              min={1}
-              max={12}
-              step={1}
-              persistentThumb
-              marks
-              overrides={sliderOverrides}
-            />
-          </FormControl>
-
-          <FormControl label="Embedding Size">
-            <Slider
-              value={[nEmbd]}
-              min={1}
-              max={768}
-              step={16}
-              persistentThumb
-              marks
-              overrides={sliderOverrides}
-            />
-          </FormControl>
-
-          <FormControl label="Context Window Size">
-            <Slider
-              value={[blockSize]}
-              min={1}
-              max={1024}
-              step={16}
-              persistentThumb
-              marks
-              overrides={sliderOverrides}
-            />
-          </FormControl>
+        <Block
+          marginTop="scale500"
+          color="contentSecondary"
+          $style={{ fontSize: '14px', lineHeight: '22px' }}
+        >
+          <b>Architecture:</b> {CONFIG[modelVariant].nLayer} layers ·{' '}
+          {CONFIG[modelVariant].nHead} attention heads · {CONFIG[modelVariant].nEmbd}{' '}
+          embedding size · {CONFIG[modelVariant].blockSize}-character context window
         </Block>
       </FadeIn>
     ) : null
@@ -262,23 +275,24 @@ export function Model(props: ModelProps) {
     if (model === undefined) {
       onModelInit()
     }
-  }, [model, backend, vocabSize])
+  }, [model, backend, vocabSize, datasetId])
+
+  React.useEffect(() => {
+    return () => {
+      initializationId.current += 1
+    }
+  }, [])
 
   return (
     <Block>
       {segments}
       {loader}
-      {totalParams}
+      {showTechnicalDetails && totalParams}
+      {showTechnicalDetails && modelDetails}
 
-      <Block
-        display="flex"
-        marginTop="scale800"
-        flexDirection={['column', 'column', 'row']}
-        gridGap={['0px', '0px', 'scale600']}
-      >
-        <Block flex={2}>{readOnlyParams}</Block>
-        <Block flex={1}>{weightsUploader}</Block>
-      </Block>
+      {showTechnicalDetails && (
+        <Block marginTop="scale800">{weightsUploader}</Block>
+      )}
 
       {error}
     </Block>
@@ -288,33 +302,15 @@ export function Model(props: ModelProps) {
 const MODELS: Partial<
   Record<ModelVariant, { label: string; description?: React.ReactNode }>
 > = {
-  'gpt-pico': {
-    label: 'Pico',
-  },
   'gpt-nano': {
     label: 'Nano',
   },
-  'gpt-micro': {
-    label: 'Micro',
-  },
-  'gpt-mini': {
-    label: 'Mini',
-  },
-  gpt2: {
-    label: 'GPT-2',
+  'gpt-pico': {
+    label: 'Pico',
   },
 }
 
-const sliderOverrides: SliderOverrides = {
-  ThumbValue: () => null,
-  InnerThumb: ({ $value, $thumbIndex }) => <>{$value[$thumbIndex]}</>,
-  Thumb: {
-    style: () => ({
-      color: 'white',
-      fontWeight: 600,
-      height: '32px',
-      width: '32px',
-      borderRadius: '50%',
-    }),
-  },
+const MODEL_WEIGHTS: Partial<Record<ModelVariant, string>> = {
+  'gpt-pico': 'gpt-pico--shakespeare--2p13.json',
+  'gpt-nano': 'gpt-nano--shakespeare--1p80.json',
 }

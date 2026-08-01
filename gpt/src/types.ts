@@ -11,6 +11,9 @@ export type ModelParams = {
   // These options must be filled in externally
   vocabSize: number 
   blockSize: number // context window
+  // Character datasets reserve token 0 for padding, while model output classes
+  // are zero-based. Set this to 1 for freshly trained character models.
+  tokenIndexShift?: number
 
   // Dropout hyper-parameters
   embdDropout?: number

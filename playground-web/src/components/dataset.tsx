@@ -6,12 +6,11 @@ import { BackendId, DatasetId } from '../types/playground'
 import { FaFeatherAlt } from 'react-icons/fa'
 import { SIZE } from 'baseui/input'
 import { StyledLink } from 'baseui/link'
-import { MdFastfood } from 'react-icons/md'
 import { Textarea } from 'baseui/textarea'
 import { FormControl } from 'baseui/form-control'
 import { FlexGrid, FlexGridItem } from 'baseui/flex-grid'
 import { Skeleton } from 'baseui/skeleton'
-import { BASE_PATH, RECIPE_BOX_DATASET_URL } from '../config/links'
+import { BASE_PATH } from '../config/links'
 import { Notification } from './shared/notification'
 import { FadeIn } from './shared/fade'
 import { FaTools } from 'react-icons/fa'
@@ -23,10 +22,16 @@ type StepProps = {
   dataset: DatasetT | undefined
   backend: BackendId | undefined
   onChange?: (dataset: DatasetT, datasetId: DatasetId) => Promise<void>
+  showTechnicalDetails?: boolean
 }
 
 export function Dataset(props: StepProps) {
-  const { onChange = () => {}, dataset, backend } = props
+  const {
+    onChange = () => {},
+    dataset,
+    backend,
+    showTechnicalDetails = false,
+  } = props
 
   const [datasetId, setDatasetId] = React.useState<DatasetId>('shakespeare')
   const [isLoading, setIsLoading] = React.useState<boolean>()
@@ -49,8 +54,6 @@ export function Dataset(props: StepProps) {
         let textSourceURL: string | undefined = undefined
         if (nextDatasetId === 'shakespeare') {
           textSourceURL = `${BASE_PATH}/dataset-tinyshakespeare.txt`
-        } else if (nextDatasetId === 'recipes') {
-          textSourceURL = `${BASE_PATH}/dataset-recipes.txt`
         }
         if (textSourceURL) {
           const nextDataset = await CharDataset({ textSourceURL })
@@ -98,15 +101,14 @@ export function Dataset(props: StepProps) {
             label="Shakespeare"
             artwork={() => <FaFeatherAlt />}
           />
-          <Segment key="recipes" label="Recipes" artwork={() => <MdFastfood />} />
           <Segment key="custom" label="Custom" artwork={() => <FaTools />} />
         </SegmentedControl>
       </FadeIn>
     </Block>
   )
 
-  const standardSummary = !isLoading &&
-    ['shakespeare', 'recipes'].includes(datasetId) && (
+  const standardSummary =
+    showTechnicalDetails && !isLoading && datasetId === 'shakespeare' && (
       <FadeIn>
         <FlexGrid flexGridColumnCount={[1, 1, 2]} flexGridColumnGap="scale600">
           <FlexGridItem>
@@ -120,12 +122,6 @@ export function Dataset(props: StepProps) {
                       <StyledLink href={dataset?.textSourceURL}>
                         Tiny Shakespeare
                       </StyledLink>
-                    </>
-                  )}
-                  {datasetId === 'recipes' && (
-                    <>
-                      Source:{' '}
-                      <StyledLink href={RECIPE_BOX_DATASET_URL}>Recipe box</StyledLink>
                     </>
                   )}
                 </>
@@ -182,7 +178,10 @@ export function Dataset(props: StepProps) {
     )
 
   const customSummary = !isLoading && dataset && datasetId === 'custom' && (
-    <FlexGrid flexGridColumnCount={[1, 1, 2]} flexGridColumnGap="scale600">
+    <FlexGrid
+      flexGridColumnCount={showTechnicalDetails ? [1, 1, 2] : 1}
+      flexGridColumnGap="scale600"
+    >
       <FlexGridItem>
         <FormControl label="Dataset" caption={() => <>Type or copy-paste custom text</>}>
           <Textarea
@@ -198,42 +197,44 @@ export function Dataset(props: StepProps) {
         </FormControl>
       </FlexGridItem>
 
-      <FlexGridItem>
-        <Block display="flex" flexDirection="row" gridGap="scale600">
-          <Block flex="1">
-            <FormControl label="Dataset size">
-              <Count
-                count={dataset?.dataSize}
-                label="characters in total"
-                hierarchy="secondary"
-              />
-            </FormControl>
+      {showTechnicalDetails && (
+        <FlexGridItem>
+          <Block display="flex" flexDirection="row" gridGap="scale600">
+            <Block flex="1">
+              <FormControl label="Dataset size">
+                <Count
+                  count={dataset?.dataSize}
+                  label="characters in total"
+                  hierarchy="secondary"
+                />
+              </FormControl>
+            </Block>
+
+            <Block flex="1">
+              <FormControl label="Vocabulary size">
+                <Count
+                  count={dataset?.vocabSize}
+                  label="unique characters"
+                  hierarchy="secondary"
+                />
+              </FormControl>
+            </Block>
           </Block>
 
-          <Block flex="1">
-            <FormControl label="Vocabulary size">
-              <Count
-                count={dataset?.vocabSize}
-                label="unique characters"
-                hierarchy="secondary"
-              />
-            </FormControl>
-          </Block>
-        </Block>
-
-        <FormControl
-          label="Vocabulary"
-          caption="Unique characters (including line breaks and spaces)"
-          disabled={!dataset.vocabulary}
-        >
-          <Textarea
-            value={dataset.vocabulary?.join('')}
-            rows={3}
-            size={inputSize}
-            readOnly
-          />
-        </FormControl>
-      </FlexGridItem>
+          <FormControl
+            label="Vocabulary"
+            caption="Unique characters (including line breaks and spaces)"
+            disabled={!dataset.vocabulary}
+          >
+            <Textarea
+              value={dataset.vocabulary?.join('')}
+              rows={3}
+              size={inputSize}
+              readOnly
+            />
+          </FormControl>
+        </FlexGridItem>
+      )}
     </FlexGrid>
   )
 

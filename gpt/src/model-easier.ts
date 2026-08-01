@@ -20,7 +20,7 @@ import { countParams, dispose, withLayerHelpers, withModelHelpers } from './util
 
 // GPT Language Model
 export function GPT(params: ModelParams): Model {
-  const { nLayer, nHead, nEmbd, vocabSize, blockSize, embdDropout = 0.1, residDropout = 0.1, attnDropout = 0.1 } = params
+  const { nLayer, nHead, nEmbd, vocabSize, blockSize, tokenIndexShift = 0, embdDropout = 0.1, residDropout = 0.1, attnDropout = 0.1 } = params
 
   let modelIsWarm = false // Whether model weights are initialized yet or not
 
@@ -63,7 +63,9 @@ export function GPT(params: ModelParams): Model {
 
       const [B, T, C] = logits.shape // B - batch dimension, T - time dimension, C - embeddings dimension
       const flattenLogits = logits.reshape([B * T, C])
-      const flattenTargets = targets.reshape([B * T])
+      const flattenTargets = targets
+        .reshape([B * T])
+        .sub(tf.scalar(tokenIndexShift, 'int32'))
       const targetsOneHot = tf.oneHot(flattenTargets, vocabSize)
 
       const loss = tf.losses.softmaxCrossEntropy(targetsOneHot, flattenLogits)
@@ -94,7 +96,8 @@ export function GPT(params: ModelParams): Model {
 
         // Focus only on the last time step (all from first axis, last from second axis, all from third axis)
         // Remove the second axis dimension (because it is 1 after the slice) using tf.squeeze()
-        let lastCharLogits = logits.slice([0, i < blockSize ? i : blockSize - 1, 0], [-1, 1, -1]).squeeze([1]) // Becomes (B, C)
+        const lastContextPosition = Math.min(T - 1, blockSize - 1)
+        let lastCharLogits = logits.slice([0, lastContextPosition, 0], [-1, 1, -1]).squeeze([1]) // Becomes (B, C)
 
         // Scale by desired temperature
         lastCharLogits = tf.div(lastCharLogits, tf.scalar(temperature))
@@ -132,6 +135,11 @@ export function GPT(params: ModelParams): Model {
         } else {
           sampled = probs.argMax(-1).expandDims(-1)
           idxNext = sampled
+        }
+
+        if (tokenIndexShift) {
+          const shiftedIdxNext = idxNext.add(tokenIndexShift)
+          idxNext = shiftedIdxNext
         }
 
         // Append sampled index to the running sequence and continue

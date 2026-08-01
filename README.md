@@ -1,12 +1,12 @@
-# Homemade GPT • JS
+# AI100-GPT
 
-![Homemade GPT JS](./playground-web/public/cover.jpg)
+![AI100-GPT](./playground-web/public/cover.jpg)
 
 A minimal TensorFlow.js re-implementation of Karpathy's [minGPT](https://github.com/karpathy/minGPT) (Generative Pre-trained Transformer).
 
 A full definition of this "homemade" **GPT** language model (all of it) can be found in this single [model.ts](./gpt/src/model.ts) file (less than `300` lines of code).
 
-Since [model.ts](./gpt/src/model.ts) is written in TypeScript, you can use [homemade GPT playground](https://trekhleb.dev/homemade-gpt-js) to train it, experiment with parameters, and generate its predictions directly in the browser using a GPU.
+Since [model.ts](./gpt/src/model.ts) is written in TypeScript, you can use [AI100-GPT playground](https://trekhleb.dev/AI100-GPT) to train it, experiment with parameters, and generate its predictions directly in the browser using a GPU.
 
 The model and the playground are written for *learning purposes*, to understand how GPT works and to use WebGPU for training.
 
@@ -22,15 +22,15 @@ Inside the [./gpt/src/](./gpt/src/) folder you'll find the following files:
 - [dataset.ts](./gpt/src/dataset.ts) - Nothing GPT-specific here. A helper wrapper on top of any txt-file-based character-level dataset. It loads an arbitrary txt file, treats each letter as a token, splits the characters into training and testing batches, and encodes/decodes letters to indices and vice versa.
 - [trainer.ts](./gpt/src/trainer.ts) - Nothing GPT-specific here as well. This file provides a simple training loop that could apply to any arbitrary neural network.
 
-Some pre-trained models weights are published in [homemade-gpt-js-weights](https://github.com/trekhleb/homemade-gpt-js-weights) repository. You may apply them via the web playground ("Generation" section) or via the Node.js playground (`model.setWeights()`).
+Some pre-trained models weights are published in [AI100-GPT-weights](https://github.com/trekhleb/homemade-gpt-js-weights) repository. You may apply them via the web playground ("Generation" section) or via the Node.js playground (`model.setWeights()`).
 
 ### Web Playground
 
-To experiment with model parameters, training, and text generation you may use the [Homemade GPT JS playground](https://trekhleb.dev/homemade-gpt-js).
+To experiment with model parameters, training, and text generation you may use the [AI100-GPT playground](https://trekhleb.dev/AI100-GPT).
 
-|[Homemade GPT JS playground](https://trekhleb.dev/homemade-gpt-js)|
+|[AI100-GPT playground](https://trekhleb.dev/AI100-GPT)|
 |---|
-|![Homemade GPT playground](./playground-web/public/playground-demo.gif)|
+|![AI100-GPT playground](./playground-web/public/playground-demo.gif)|
 
 You may also launch the playground locally if you want to modify and experiment with the code of the transformer model itself.
 
@@ -46,7 +46,7 @@ Launch web playground locally:
 npm run playground-web
 ```
 
-The playground will be accessible on http://localhost:3000/homemade-gpt-js 
+The playground will be accessible on http://localhost:3000/AI100-GPT
 
 Run these commands from the root of the project. You need to have Node.js ≥ 20.0.0.
 

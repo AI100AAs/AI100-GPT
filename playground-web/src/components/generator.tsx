@@ -25,19 +25,27 @@ type GeneratorProps = {
   model: ModelT | undefined
   modelVariant: ModelVariant | undefined
   datasetId: DatasetId | undefined
+  showTechnicalDetails?: boolean
 }
 
 export function Generator(props: GeneratorProps) {
-  const { model, modelVariant, dataset, datasetId } = props
+  const {
+    model,
+    modelVariant,
+    dataset,
+    datasetId,
+    showTechnicalDetails = false,
+  } = props
 
   const { enqueue } = useSnackbar()
 
   const [isGenerating, setIsGeneration] = React.useState<boolean>(false)
   const [isLoadingWeights, setIsLoadingWeights] = React.useState<boolean>(false)
 
-  const [maxNewTokens, setMaxNewTokens] = React.useState<number>(500)
+  const [maxNewTokens, setMaxNewTokens] = React.useState<number>(200)
   const [temperature, setTemperature] = React.useState<number>(1)
   const [doSample, setDoSample] = React.useState<boolean>(true)
+  const [inputContext, setInputContext] = React.useState<string>('')
   const [errorMessage, setErrorMessage] = React.useState<string>()
 
   const [topK, setTopK] = React.useState<number>()
@@ -49,6 +57,7 @@ export function Generator(props: GeneratorProps) {
 
   const [generateStartTime, setGenerateStartTime] = React.useState<number>()
   const [generateStopTime, setGenerateStopTime] = React.useState<number>()
+  const [tokenCount, setTokenCount] = React.useState<number>(0)
 
   const [generatedText, setGeneratedText] = React.useState<string>('')
   const generatedTextRef = React.useRef<string>('')
@@ -56,11 +65,13 @@ export function Generator(props: GeneratorProps) {
   const [pretrainedWeightsIndex, setPretrainedWeightsIndex] =
     React.useState<ModelWeightsIndex>()
 
-  const formError = maxNewTokensErr || temperatureErr || doSampleErr || topKErr
+  const inputContextErr = getInputContextError(inputContext, dataset, model)
+  const formError =
+    inputContextErr || maxNewTokensErr || temperatureErr || doSampleErr || topKErr
 
   const loadPretrainedWeightsIndex = async () => {
     try {
-      const response = await fetch(`${MODEL_WEIGHTS_BASE_URL}/weights.json`)
+      const response = await fetch(`${MODEL_WEIGHTS_BASE_URL}weights.json`)
       if (!response.ok) throw new Error(`Error: ${response.statusText}`)
       const weightsIndex = await response.json()
       setPretrainedWeightsIndex(weightsIndex as ModelWeightsIndex)
@@ -94,18 +105,23 @@ export function Generator(props: GeneratorProps) {
   }
 
   const onStartGeneration = () => {
-    setGeneratedText('')
-    generatedTextRef.current = ''
+    setGeneratedText(inputContext)
+    generatedTextRef.current = inputContext
     setIsGeneration(true)
     setGenerateStartTime(performance.now())
     setGenerateStopTime(undefined)
+    setTokenCount(0)
 
     // Let React apply the loading state before proceeding
     setTimeout(async () => {
       if (model && dataset) {
+        const encodedContext = dataset.encode(inputContext)
+        const idx = encodedContext.length
+          ? tf.tensor2d([encodedContext], [1, encodedContext.length], 'int32')
+          : tf.ones([1, 1], 'int32')
         const generated = await model.generate(
           {
-            idx: tf.ones([1, 1], 'int32'),
+            idx,
             maxNewTokens,
             temperature,
             doSample,
@@ -115,9 +131,11 @@ export function Generator(props: GeneratorProps) {
             const nextChar = dataset.decode([nextToken])[0]
             generatedTextRef.current += nextChar
             setGeneratedText(generatedTextRef.current)
+            setTokenCount((c) => c + 1)
           },
         )
         generated.dispose()
+        idx.dispose()
       }
       setIsGeneration(false)
       setGenerateStopTime(performance.now())
@@ -164,6 +182,9 @@ export function Generator(props: GeneratorProps) {
       ? msToS(generateStopTime - generateStartTime, 2)
       : undefined
 
+  const tokensPerSecond =
+    generationTime && tokenCount ? (tokenCount / parseFloat(generationTime)).toFixed(1) : undefined
+
   const isFormDisabled = isGenerating
   const isGenerationAllowed = !isGenerating && !formError && model && dataset
 
@@ -172,7 +193,11 @@ export function Generator(props: GeneratorProps) {
       <Block marginTop="scale800">
         <FormControl
           label="Generated text"
-          caption={generationTime ? `Generated in: ${generationTime}` : undefined}
+          caption={
+            showTechnicalDetails && generationTime
+              ? `Generated in: ${generationTime}s | ${tokenCount} tokens | ${tokensPerSecond} tok/s`
+              : undefined
+          }
         >
           <Textarea size={SIZE.compact} value={generatedText} rows={10} readOnly />
         </FormControl>
@@ -249,9 +274,29 @@ export function Generator(props: GeneratorProps) {
 
   const form = (
     <FadeIn>
-      <Block>
         <Block>
-          <FlexGrid flexGridColumnCount={[1, 1, 4, 4]} flexGridColumnGap="scale600">
+          <FormControl
+            label="Input context"
+            caption={
+              model
+                ? `Optional. Enter up to ${model.params.blockSize} characters from the selected dataset, or leave it blank to generate from scratch.`
+                : 'Optional. The model will continue from this text when provided.'
+            }
+            disabled={isFormDisabled}
+            error={inputContextErr}
+          >
+            <Textarea
+              value={inputContext}
+              onChange={(event) => setInputContext(event.target.value)}
+              placeholder="Enter the text that the model should continue…"
+              rows={5}
+            />
+          </FormControl>
+
+          <FlexGrid
+            flexGridColumnCount={showTechnicalDetails ? [1, 1, 4, 4] : 1}
+            flexGridColumnGap="scale600"
+          >
             <FlexGridItem>
               <FormControl
                 label="Sequence length"
@@ -269,56 +314,60 @@ export function Generator(props: GeneratorProps) {
               </FormControl>
             </FlexGridItem>
 
-            <FlexGridItem>
-              <FormControl
-                label="Temperature"
-                caption="The degree of randomness in token selection. Higher temperatures can lead to more creative or sometimes hallucinated results."
-                disabled={isFormDisabled}
-                error={temperatureErr}
-              >
-                <Input
-                  type="number"
-                  value={temperature}
-                  onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                  min={1}
-                  step={1}
-                />
-              </FormControl>
-            </FlexGridItem>
+            {showTechnicalDetails && (
+              <>
+                <FlexGridItem>
+                  <FormControl
+                    label="Temperature"
+                    caption="The degree of randomness in token selection. Higher temperatures can lead to more creative or sometimes hallucinated results."
+                    disabled={isFormDisabled}
+                    error={temperatureErr}
+                  >
+                    <Input
+                      type="number"
+                      value={temperature}
+                      onChange={(e) => setTemperature(parseFloat(e.target.value))}
+                      min={1}
+                      step={1}
+                    />
+                  </FormControl>
+                </FlexGridItem>
 
-            <FlexGridItem>
-              <FormControl
-                label="Top K"
-                caption="From how many of the most probable tokens can the next token be chosen during sampling"
-                disabled={isFormDisabled}
-                error={topKErr}
-              >
-                <Input
-                  type="number"
-                  value={topK}
-                  onChange={(e) => setTopK(parseInt(e.target.value))}
-                  min={1}
-                  step={1}
-                />
-              </FormControl>
-            </FlexGridItem>
+                <FlexGridItem>
+                  <FormControl
+                    label="Top K"
+                    caption="From how many of the most probable tokens can the next token be chosen during sampling"
+                    disabled={isFormDisabled}
+                    error={topKErr}
+                  >
+                    <Input
+                      type="number"
+                      value={topK}
+                      onChange={(e) => setTopK(parseInt(e.target.value))}
+                      min={1}
+                      step={1}
+                    />
+                  </FormControl>
+                </FlexGridItem>
 
-            <FlexGridItem>
-              <FormControl
-                label="Sampling"
-                caption="Controls the trade-off between creativity (when random sampling is enabled) and predictability (when choosing the most probable token) in text generation."
-                disabled={isFormDisabled}
-                error={doSampleErr}
-              >
-                <Checkbox
-                  checked={doSample}
-                  onChange={(e) => setDoSample(e.target.checked)}
-                  labelPlacement={LABEL_PLACEMENT.right}
-                >
-                  Random sampling
-                </Checkbox>
-              </FormControl>
-            </FlexGridItem>
+                <FlexGridItem>
+                  <FormControl
+                    label="Sampling"
+                    caption="Controls the trade-off between creativity (when random sampling is enabled) and predictability (when choosing the most probable token) in text generation."
+                    disabled={isFormDisabled}
+                    error={doSampleErr}
+                  >
+                    <Checkbox
+                      checked={doSample}
+                      onChange={(e) => setDoSample(e.target.checked)}
+                      labelPlacement={LABEL_PLACEMENT.right}
+                    >
+                      Random sampling
+                    </Checkbox>
+                  </FormControl>
+                </FlexGridItem>
+              </>
+            )}
           </FlexGrid>
         </Block>
 
@@ -337,7 +386,6 @@ export function Generator(props: GeneratorProps) {
         </Block>
 
         {generatedTextForm}
-      </Block>
     </FadeIn>
   )
 
@@ -351,11 +399,35 @@ export function Generator(props: GeneratorProps) {
 
   return (
     <>
-      {preTrainedWeights}
+      {showTechnicalDetails && preTrainedWeights}
       {error}
       {form}
     </>
   )
+}
+
+function getInputContextError(
+  inputContext: string,
+  dataset?: Dataset,
+  model?: ModelT,
+): string | undefined {
+  if (!inputContext.length) return undefined
+  if (!dataset || !model) return undefined
+  if (inputContext.length > model.params.blockSize) {
+    return `Must be ${model.params.blockSize} characters or fewer`
+  }
+
+  const vocabulary = new Set(dataset.vocabulary)
+  const unsupportedCharacters = Array.from(
+    new Set(Array.from(inputContext).filter((character) => !vocabulary.has(character))),
+  )
+  if (unsupportedCharacters.length) {
+    return `Not in the selected dataset: ${unsupportedCharacters
+      .slice(0, 5)
+      .map((character) => JSON.stringify(character))
+      .join(', ')}`
+  }
+  return undefined
 }
 
 function findWeightsForCurrentModelDataset(

@@ -33,9 +33,30 @@ export function Backend(props: BackendProps) {
     try {
       // For WASM backend, set the path to the public folder where `.wasm` files are located
       setWasmPaths(BASE_PATH + '/')
+
+      // Prefer WebGPU explicitly: it is by far the fastest backend for training,
+      // and relying on tfjs' default pick can silently land us on WASM.
+      if (isWebGPUSupported()) {
+        try {
+          // NOTE: `setBackend` resolves to `false` on failure rather than
+          // throwing, so the return value has to be checked explicitly.
+          const ok = await tf.setBackend('webgpu')
+          if (!ok) {
+            console.warn('[tfjs] WebGPU was reported as supported but could not be activated')
+          }
+        } catch (err) {
+          // Adapter request can still fail on paper-supported devices; fall
+          // through and let tfjs pick whatever else is available.
+          console.warn('[tfjs] WebGPU activation threw, falling back', err)
+        }
+      }
       await tf.ready()
-      const detectedBackend = Object.keys(tf.engine().registry)[0] as BackendId
-      await onChange(detectedBackend)
+
+      // `tf.getBackend()` is the backend that is actually active. (Reading the
+      // registry instead reports whichever backend happened to register first.)
+      const activeBackend = tf.getBackend()
+      console.info('[tfjs] active backend:', activeBackend)
+      await onChange(activeBackend as BackendId)
     } catch (err) {
       setErrorMessage((err as Error).message)
     } finally {
@@ -52,7 +73,10 @@ export function Backend(props: BackendProps) {
       if (!success) {
         throw new Error(`Cannot set a ${nextBackend} backend`)
       }
-      onChange(nextBackend)
+      // Report what is actually active, not what was requested.
+      const activeBackend = tf.getBackend()
+      console.info('[tfjs] active backend:', activeBackend)
+      onChange(activeBackend as BackendId)
     } catch (err) {
       setErrorMessage((err as Error).message)
     }
@@ -91,9 +115,8 @@ export function Backend(props: BackendProps) {
           onBackendChange(activeKey as BackendId)
         }}
       >
-        {(Object.keys(BACKENDS) as BackendId[]).map((backendId) => {
+        {(Object.keys(BACKENDS) as (keyof typeof BACKENDS)[]).map((backendId) => {
           const disabled =
-            (backendId === 'webgl' && !hasWebGL) ||
             (backendId === 'webgpu' && !hasWebGPU) ||
             (backendId === 'wasm' && !hasWASM)
           return (
@@ -134,22 +157,9 @@ export function Backend(props: BackendProps) {
   )
 }
 
-export const BACKENDS: Record<
-  BackendId,
-  {
-    label: string
-    description?: React.ReactNode
-  }
-> = {
-  cpu: {
-    label: 'CPU',
-    description: (
-      <SegmentDescription>
-        <TurtleIcon width="16" />
-        <TurtleIcon width="16" />
-      </SegmentDescription>
-    ),
-  },
+// TODO: Re-enable cpu and webgl backends once performance is acceptable
+export const BACKENDS = {
+  // cpu: { label: 'CPU', description: <SegmentDescription><TurtleIcon width="16" /><TurtleIcon width="16" /></SegmentDescription> },
   wasm: {
     label: 'WASM',
     description: (
@@ -158,14 +168,7 @@ export const BACKENDS: Record<
       </SegmentDescription>
     ),
   },
-  webgl: {
-    label: 'WebGL',
-    description: (
-      <SegmentDescription>
-        <IoRocketSharp size={13} />
-      </SegmentDescription>
-    ),
-  },
+  // webgl: { label: 'WebGL', description: <SegmentDescription><IoRocketSharp size={13} /></SegmentDescription> },
   webgpu: {
     label: 'WebGPU',
     description: (

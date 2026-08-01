@@ -1,9 +1,4 @@
 import { Block } from 'baseui/block'
-import { Button, SHAPE, KIND } from 'baseui/button'
-import { IoLogoGithub } from 'react-icons/io'
-import { FaXTwitter } from 'react-icons/fa6'
-import { BiHomeAlt } from 'react-icons/bi'
-import { REPO_URL, TREKHLEB_DEV_URL, X_URL } from '../../config/links'
 
 export function Footer() {
   return (
@@ -15,32 +10,8 @@ export function Footer() {
         flexDirection="row"
         gridGap="5px"
         justifyContent="center"
-        $style={{ borderTop: '2px solid #F3F3F3' }}
-      >
-        <Button
-          $as="a"
-          href={REPO_URL}
-          shape={SHAPE.circle}
-          kind={KIND.tertiary}
-          target="_blank"
-        >
-          <IoLogoGithub size={26} />
-        </Button>
-
-        <Button
-          $as="a"
-          href={X_URL}
-          shape={SHAPE.circle}
-          kind={KIND.tertiary}
-          target="_blank"
-        >
-          <FaXTwitter size={23} />
-        </Button>
-
-        <Button $as="a" href={TREKHLEB_DEV_URL} shape={SHAPE.circle} kind={KIND.tertiary}>
-          <BiHomeAlt size={25} />
-        </Button>
-      </Block>
+        $style={{ borderTop: '2px solid rgba(127, 127, 127, 0.18)' }}
+      />
     </Block>
   )
 }
