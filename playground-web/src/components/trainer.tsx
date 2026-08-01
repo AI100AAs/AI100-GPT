@@ -34,22 +34,11 @@ const testDataSeriesId = 'Test Loss'
 export function Trainer(props: TrainerProps) {
   const { model, dataset, simplified = false } = props
 
-  // Training is dispatch-bound rather than throughput-bound on these small
-  // models: a step is a few hundred tiny GPU kernels, and the CPU-side cost of
-  // encoding them dominates. A larger batch does more work per dispatch for
-  // roughly the same overhead, so it buys a much better loss-per-second.
-  const [batchSize, setBatchSize] = React.useState<number>(256)
-  // At batch 256 each step sees 32x the samples it did at batch 8, so far fewer
-  // steps are needed to see a comparable amount of data: 200 x 256 samples is
-  // several times the old 2000 x 8.
-  const [maxEpochs, setMaxEpochs] = React.useState<number>(200)
-  // Bigger batches give lower-variance gradients, which tolerates (and needs) a
-  // larger step. Scaled roughly with the square root of the batch increase --
-  // linear scaling would suggest ~0.03, which reliably diverges for Adam on a
-  // model this small.
-  const [learningRate, setLearningRate] = React.useState<string>('0.005')
-  const [evalInterval, setEvalInterval] = React.useState<number>(50)
-  const [evalIterations, setEvalIterations] = React.useState<number>(25)
+  const [batchSize, setBatchSize] = React.useState<number>(8)
+  const [maxEpochs, setMaxEpochs] = React.useState<number>(2000)
+  const [learningRate, setLearningRate] = React.useState<string>('0.001')
+  const [evalInterval, setEvalInterval] = React.useState<number>(200)
+  const [evalIterations, setEvalIterations] = React.useState<number>(50)
 
   const [batchSizeErr, setBatchSizeErr] = React.useState<string>()
   const [maxEpochsErr, setMaxEpochsErr] = React.useState<string>()
@@ -81,9 +70,9 @@ export function Trainer(props: TrainerProps) {
     evalIntervalErr ||
     evalIterationsErr
 
-  const effectiveMaxEpochs = simplified ? 150 : maxEpochs
-  const effectiveEvalInterval = simplified ? 25 : evalInterval
-  const effectiveEvalIterations = simplified ? 10 : evalIterations
+  const effectiveMaxEpochs = simplified ? 400 : maxEpochs
+  const effectiveEvalInterval = simplified ? 100 : evalInterval
+  const effectiveEvalIterations = simplified ? 20 : evalIterations
 
   const onStartTraining = () => {
     isStopRequestedRef.current = false

@@ -10,19 +10,40 @@
 import * as tf from '@tensorflow/tfjs'
 import { Dataset, Model, TrainingCallbacks, TrainingParams } from './types'
 
+/**
+ * Hands control back to the browser so the UI can repaint and so a stop request
+ * can be observed.
+ *
+ * `tf.nextFrame()` is built on `requestAnimationFrame`, which does not fire at
+ * all while the document is hidden -- a backgrounded, minimised or occluded tab.
+ * Awaiting it there never resolves and training halts after a single iteration,
+ * so it is only safe to use while the page is actually visible.
+ *
+ * A `MessageChannel` round-trip is the fallback: unlike `setTimeout`, it is not
+ * clamped to 1s in background tabs, so training continues at full speed with the
+ * tab hidden.
+ */
+function yieldToBrowser(): Promise<void> {
+  const isHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+  if (!isHidden) {
+    return tf.nextFrame()
+  }
+  return new Promise((resolve) => {
+    const channel = new MessageChannel()
+    channel.port1.onmessage = () => {
+      channel.port1.close()
+      resolve()
+    }
+    channel.port2.postMessage(undefined)
+  })
+}
+
 export function Trainer(args: { model: Model, dataset: Dataset, callbacks: TrainingCallbacks, params: TrainingParams }) {
   const { model, dataset, callbacks, params } = args 
   const { evalIterations, learningRate, evalInterval, maxIters, batchSize, blockSize } = params
 
-  // How long we're allowed to hog the main thread before yielding back to the
-  // browser. Yielding on *every* iteration costs a full animation frame (~16ms)
-  // per step, which for small models dwarfs the training step itself. Yielding
-  // on a time budget instead keeps the UI responsive at a fraction of the cost.
-  const YIELD_BUDGET_MS = 50
-
   const train = async () => {
     const optimizer = model.optimizer({ learningRate })
-    let lastYieldAt = performance.now()
 
     const estimateLoss = () => tf.tidy(() => {
       const result: { train?: tf.Tensor; test?: tf.Tensor } = {}
@@ -65,13 +86,9 @@ export function Trainer(args: { model: Model, dataset: Dataset, callbacks: Train
       y.dispose()
       if (callbacks?.isStopRequested?.()) break
 
-      // Unblock the main thread (allow the UI to be re-rendered) if the
-      // training is running in the browser, but only once we've actually held
-      // it for a while.
-      if (performance.now() - lastYieldAt >= YIELD_BUDGET_MS) {
-        await tf.nextFrame()
-        lastYieldAt = performance.now()
-      }
+      // Unblock the main thread (allow the UI to be re-rendered)
+      // if the training is running in the browser
+      await yieldToBrowser()
     }
 
     optimizer.dispose()
