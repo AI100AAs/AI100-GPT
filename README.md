@@ -1,71 +1,96 @@
-# AI100-GPT
+# AI100-GPT playground
 
-![AI100-GPT](./playground-web/public/cover.jpg)
+This repository contains the standalone AI100-GPT teaching playground: a very
+small GPT model that runs in the browser and makes next-character prediction,
+style, and fine-tuning visible through short experiments.
 
-A minimal TensorFlow.js re-implementation of Karpathy's [minGPT](https://github.com/karpathy/minGPT) (Generative Pre-trained Transformer).
+**Try it online:** [AI100-GPT playground](https://ai100-gpt-playground.ai100aas.chatgpt.site)
 
-A full definition of this "homemade" **GPT** language model (all of it) can be found in this single [model.ts](./gpt/src/model.ts) file (less than `300` lines of code).
+The playground is designed for learning, not for answering questions like a
+chatbot. It continues a starting phrase one character at a time, so students
+can see how a model's learned text patterns shape each next choice.
 
-Since [model.ts](./gpt/src/model.ts) is written in TypeScript, you can use [AI100-GPT playground](https://trekhleb.dev/AI100-GPT) to train it, experiment with parameters, and generate its predictions directly in the browser using a GPU.
+## What is included
 
-The model and the playground are written for *learning purposes*, to understand how GPT works and to use WebGPU for training.
+- **Explore:** choose a bundled text style and generate a continuation.
+- **Teach it your style:** add several lines of your own writing and train a
+  small adapter on-device.
+- **Compare:** generate the same prompt before and after teaching, then
+  continue both outputs with one button.
+- **Save and load:** download a trained style as JSON and load it again later.
+- **Input context:** provide up to 128 characters as the starting context; the
+  default generated sequence length is 200 characters.
+- **Dark and light themes:** the selected theme is remembered locally.
 
-To understand what's happening in the [model.ts](./gpt/src/model.ts) file please refer to Andrej Karpathy's well-explained, hands-on lecture "[Let's build GPT: from scratch, in code, spelled out](https://www.youtube.com/watch?v=kCc8FmEb1nY)" (arguably one of the best explanations of GPT out there).
+The public interface currently exposes the **GPT Micro** checkpoint. Other
+small GPT configurations and checkpoints remain in the source for experiments,
+but are intentionally hidden from the student flow for now.
 
-### GPT Folder
+## Privacy and hardware
 
-Inside the [./gpt/src/](./gpt/src/) folder you'll find the following files:
+All text processing, model loading, training, and generation happen locally in
+the browser. Student writing and generated text are not sent to a server. The
+playground uses TensorFlow.js and prefers WebGPU, with WebGL or CPU fallbacks
+when needed. No account, API key, backend, hosted model, or installation is
+required to use the live playground.
 
-- [model.ts](./gpt/src/model.ts) - this is the main file of interest, as it contains the full (yet minimalistic) definition of the decoder GPT model, as described in the [Attention Is All You Need](https://arxiv.org/pdf/1706.03762) paper.
-- [model-easier.ts](./gpt/src/model-easier.ts) - this is the same GPT model as in the previous file but simplified for easier understanding. The main difference is that it processes all `Heads` inside `CausalSelfAttention` *sequentially* (instead of in parallel). As a result, the model is a bit slower but more readable.
-- [config.ts](./gpt/src/config.ts) - contains pre-configured sets of GPT model parameters: GPT-pico, GPT-nano, GPT-mini, GPT-2, etc.
-- [dataset.ts](./gpt/src/dataset.ts) - Nothing GPT-specific here. A helper wrapper on top of any txt-file-based character-level dataset. It loads an arbitrary txt file, treats each letter as a token, splits the characters into training and testing batches, and encodes/decodes letters to indices and vice versa.
-- [trainer.ts](./gpt/src/trainer.ts) - Nothing GPT-specific here as well. This file provides a simple training loop that could apply to any arbitrary neural network.
+## Run locally
 
-Some pre-trained models weights are published in [AI100-GPT-weights](https://github.com/trekhleb/homemade-gpt-js-weights) repository. You may apply them via the web playground ("Generation" section) or via the Node.js playground (`model.setWeights()`).
-
-### Web Playground
-
-To experiment with model parameters, training, and text generation you may use the [AI100-GPT playground](https://trekhleb.dev/AI100-GPT).
-
-|[AI100-GPT playground](https://trekhleb.dev/AI100-GPT)|
-|---|
-|![AI100-GPT playground](./playground-web/public/playground-demo.gif)|
-
-You may also launch the playground locally if you want to modify and experiment with the code of the transformer model itself.
-
-Install dependencies: 
-
-```sh
-npm i
-```
-
-Launch web playground locally:
+Development requires Node.js 20 or newer.
 
 ```sh
+npm install
 npm run playground-web
 ```
 
-The playground will be accessible on http://localhost:3000/AI100-GPT
+Open the local URL printed by the development server. The source playground
+normally uses the `/AI100-GPT` path, so the default address is:
 
-Run these commands from the root of the project. You need to have Node.js ≥ 20.0.0.
+<http://localhost:3000/AI100-GPT>
 
-### Node.js Playground
+The repository also contains the original TypeScript model package and a small
+Node.js example under `gpt/` and `playground-node/`.
 
-You may also experiment with the model in Node.js environment.
+## Build
 
-Install dependencies: 
-
-```sh
-npm i
-```
-
-Launch Node.js playground:
+Build all workspaces with:
 
 ```sh
-npm run playground-node
+npm run build
 ```
 
-The [./playground-node/src/index.ts](./playground-node/src/index.ts) file contains the basic example of training and text generation.
+To build just the web playground:
 
-Run these commands from the root of the project. You need to have Node.js ≥ 20.0.0.
+```sh
+npm run build -w @playground/web
+```
+
+The compiled web app is written to `playground-web/build/` and can be served by
+any static host.
+
+## Development checks
+
+Before publishing changes, run:
+
+```sh
+npm run build
+npm run build -w @playground/web
+```
+
+## Project structure
+
+- `playground-web/src/components/` — the React playground interface.
+- `playground-web/public/` — bundled datasets, model weights, and browser assets.
+- `gpt/src/model.ts` — the TensorFlow.js GPT implementation.
+- `gpt/src/config.ts` — the available model-size configurations.
+- `playground-node/` — a Node.js training and generation example.
+
+The project is based on [homemade-gpt-js](https://github.com/trekhleb/homemade-gpt-js)
+and has been adapted for the AI100 classroom activity.
+
+## License and acknowledgements
+
+The GPT implementation follows the upstream project's educational code and
+references Andrej Karpathy's lecture, [Let's build GPT: from scratch, in code,
+spelled out](https://www.youtube.com/watch?v=kCc8FmEb1nY). The bundled
+Shakespeare text is public domain.
