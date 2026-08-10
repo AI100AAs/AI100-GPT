@@ -9,6 +9,39 @@ body {
     Arial, sans-serif;
 }
 
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Keep monospace output actually monospaced: the blanket font rule below would
+   otherwise override the reading panel and the vocabulary listing. */
+body [class*="mono"],
+body pre,
+body code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    monospace !important;
+}
+
+/* A quieter scrollbar inside the scrolling panels. */
+* {
+  scrollbar-width: thin;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.35);
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.55);
+  background-clip: content-box;
+}
+
 body,
 body * {
   font-family: var(--app-font) !important;

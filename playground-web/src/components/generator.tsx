@@ -1,7 +1,8 @@
 import React from 'react'
 import * as tf from '@tensorflow/tfjs'
-import { Dataset, Model as ModelT, ModelVariant } from '@gpt/model'
+import { Dataset, GPT, Model as ModelT, ModelVariant } from '@gpt/model'
 import { Block } from 'baseui/block'
+import { useStyletron } from 'baseui'
 import { FadeIn } from './shared/fade'
 import { FlexGrid, FlexGridItem } from 'baseui/flex-grid'
 import { FormControl } from 'baseui/form-control'
@@ -13,7 +14,7 @@ import { Textarea, SIZE } from 'baseui/textarea'
 import { msToS } from '../utils/string'
 import { Card } from 'baseui/card'
 import { Accordion, Panel } from 'baseui/accordion'
-import { DatasetId, ModelWeightsIndex } from '../types/playground'
+import { BackendId, DatasetId, ModelWeightsIndex } from '../types/playground'
 import { MODEL_WEIGHTS_BASE_URL } from '../config/links'
 import { Notification } from './shared/notification'
 import { useSnackbar } from 'baseui/snackbar'
@@ -25,7 +26,62 @@ type GeneratorProps = {
   model: ModelT | undefined
   modelVariant: ModelVariant | undefined
   datasetId: DatasetId | undefined
+  inferenceBackend?: BackendId
+  // When false the low-rank adapters are switched off, so this generator always
+  // shows the untouched pretrained model even after the learner has trained.
+  useAdapters?: boolean
+  // Optional heading, used when two generators sit side by side.
+  title?: string
   showTechnicalDetails?: boolean
+}
+
+/**
+ * Runs `fn` with the given backend active.
+ *
+ * TF.js has a single global backend and a tensor belongs to whichever backend
+ * created it, so the trained model cannot simply be used after switching. The
+ * weights do round-trip safely though -- `getWeights` returns plain JS arrays --
+ * so a throwaway model is rebuilt on the target backend, used, and disposed.
+ * Switching away does not destroy the training backend's tensors, so the real
+ * model is still intact once the original backend is restored.
+ */
+async function withBackend<T>(
+  target: BackendId | undefined,
+  model: ModelT,
+  fn: (model: ModelT) => Promise<T>,
+): Promise<T> {
+  const current = tf.getBackend()
+  if (!target || target === current || !model.getWeights || !model.setWeights) {
+    return fn(model)
+  }
+
+  const weights = await model.getWeights()
+
+  let activated = false
+  try {
+    activated = await tf.setBackend(target)
+    await tf.ready()
+  } catch (err) {
+    console.warn(`[tfjs] could not activate ${target} for inference, using ${current}`, err)
+  }
+  if (!activated) {
+    // Make sure a failed switch cannot leave us on the wrong backend.
+    await tf.setBackend(current)
+    await tf.ready()
+    return fn(model)
+  }
+
+  let scratch: ModelT | undefined
+  try {
+    scratch = GPT(model.params)
+    scratch.build()
+    scratch.setWeights!(weights)
+    return await fn(scratch)
+  } finally {
+    scratch?.dispose?.()
+    await tf.setBackend(current)
+    await tf.ready()
+  }
 }
 
 export function Generator(props: GeneratorProps) {
@@ -34,10 +90,14 @@ export function Generator(props: GeneratorProps) {
     modelVariant,
     dataset,
     datasetId,
+    inferenceBackend,
+    useAdapters = true,
+    title,
     showTechnicalDetails = false,
   } = props
 
   const { enqueue } = useSnackbar()
+  const [, theme] = useStyletron()
 
   const [isGenerating, setIsGeneration] = React.useState<boolean>(false)
   const [isLoadingWeights, setIsLoadingWeights] = React.useState<boolean>(false)
@@ -47,6 +107,7 @@ export function Generator(props: GeneratorProps) {
   const [doSample, setDoSample] = React.useState<boolean>(true)
   const [inputContext, setInputContext] = React.useState<string>('')
   const [errorMessage, setErrorMessage] = React.useState<string>()
+  const [showAdvanced, setShowAdvanced] = React.useState<boolean>(false)
 
   const [topK, setTopK] = React.useState<number>()
 
@@ -61,6 +122,16 @@ export function Generator(props: GeneratorProps) {
 
   const [generatedText, setGeneratedText] = React.useState<string>('')
   const generatedTextRef = React.useRef<string>('')
+
+  const onInputContextChange = (value: string) => {
+    setInputContext(value)
+    setGeneratedText('')
+    generatedTextRef.current = ''
+    setTokenCount(0)
+    setGenerateStartTime(undefined)
+    setGenerateStopTime(undefined)
+    setErrorMessage(undefined)
+  }
 
   const [pretrainedWeightsIndex, setPretrainedWeightsIndex] =
     React.useState<ModelWeightsIndex>()
@@ -104,10 +175,18 @@ export function Generator(props: GeneratorProps) {
     }, 0)
   }
 
-  const onStartGeneration = () => {
-    setGeneratedText(inputContext)
-    generatedTextRef.current = inputContext
+  const onStartGeneration = (continueCurrentOutput = false) => {
+    if (!model || !dataset) return
+
+    const fullContext = continueCurrentOutput ? generatedTextRef.current : inputContext
+    const modelContext = fullContext.slice(-model.params.blockSize)
+
+    if (!continueCurrentOutput) {
+      setGeneratedText(inputContext)
+      generatedTextRef.current = inputContext
+    }
     setIsGeneration(true)
+    setErrorMessage(undefined)
     setGenerateStartTime(performance.now())
     setGenerateStopTime(undefined)
     setTokenCount(0)
@@ -115,27 +194,39 @@ export function Generator(props: GeneratorProps) {
     // Let React apply the loading state before proceeding
     setTimeout(async () => {
       if (model && dataset) {
-        const encodedContext = dataset.encode(inputContext)
-        const idx = encodedContext.length
-          ? tf.tensor2d([encodedContext], [1, encodedContext.length], 'int32')
-          : tf.ones([1, 1], 'int32')
-        const generated = await model.generate(
-          {
-            idx,
-            maxNewTokens,
-            temperature,
-            doSample,
-            topK,
-          },
-          async (nextToken) => {
-            const nextChar = dataset.decode([nextToken])[0]
-            generatedTextRef.current += nextChar
-            setGeneratedText(generatedTextRef.current)
-            setTokenCount((c) => c + 1)
-          },
-        )
-        generated.dispose()
-        idx.dispose()
+        try {
+          // Both steps share one model object; the adapters are switched on or
+          // off per generator so "before" stays before.
+          model.setLoRAEnabled?.(useAdapters)
+          await withBackend(inferenceBackend, model, async (activeModel) => {
+            // `idx` has to be created after the backend switch so it belongs to
+            // the same backend as the model that consumes it.
+            const encodedContext = dataset.encode(modelContext)
+            const idx = encodedContext.length
+              ? tf.tensor2d([encodedContext], [1, encodedContext.length], 'int32')
+              : tf.ones([1, 1], 'int32')
+            const generated = await activeModel.generate(
+              {
+                idx,
+                maxNewTokens,
+                temperature,
+                doSample,
+                topK,
+              },
+              async (nextToken) => {
+                const nextChar = dataset.decode([nextToken])
+                if (!nextChar) return
+                generatedTextRef.current += nextChar
+                setGeneratedText(generatedTextRef.current)
+                setTokenCount((c) => c + 1)
+              },
+            )
+            generated.dispose()
+            idx.dispose()
+          })
+        } catch (err) {
+          setErrorMessage((err as Error).message)
+        }
       }
       setIsGeneration(false)
       setGenerateStopTime(performance.now())
@@ -182,7 +273,7 @@ export function Generator(props: GeneratorProps) {
       ? msToS(generateStopTime - generateStartTime, 2)
       : undefined
 
-  const tokensPerSecond =
+  const charactersPerSecond =
     generationTime && tokenCount ? (tokenCount / parseFloat(generationTime)).toFixed(1) : undefined
 
   const isFormDisabled = isGenerating
@@ -194,12 +285,66 @@ export function Generator(props: GeneratorProps) {
         <FormControl
           label="Generated text"
           caption={
-            showTechnicalDetails && generationTime
-              ? `Generated in: ${generationTime}s | ${tokenCount} tokens | ${tokensPerSecond} tok/s`
+            generationTime
+              ? `${generationTime} · ${tokenCount} characters · ${charactersPerSecond} char/s`
               : undefined
           }
         >
-          <Textarea size={SIZE.compact} value={generatedText} rows={10} readOnly />
+          <Block>
+            {/* A reading panel rather than a form field: this is output to be read,
+                and preserving the model's own line breaks is part of what makes
+                the two styles distinguishable at a glance. */}
+            <Block
+              as="pre"
+              padding="scale650"
+              backgroundColor="backgroundSecondary"
+              $style={{
+                borderRadius: '12px',
+                border: `1px solid ${theme.colors.borderOpaque}`,
+                margin: 0,
+                fontSize: '14px',
+                lineHeight: '22px',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                minHeight: '150px',
+                maxHeight: '420px',
+                overflowY: 'auto',
+              }}
+            >
+              {generatedText}
+              {isGenerating && (
+                <Block
+                  as="span"
+                  display="inline-block"
+                  $style={{
+                    width: '8px',
+                    height: '16px',
+                    marginLeft: '2px',
+                    verticalAlign: 'text-bottom',
+                    backgroundColor: theme.colors.contentAccent,
+                    animationName: {
+                      '0%, 49%': { opacity: 1 },
+                      '50%, 100%': { opacity: 0 },
+                    } as unknown as string,
+                    animationDuration: '1s',
+                    animationIterationCount: 'infinite',
+                  }}
+                />
+              )}
+            </Block>
+            {!isGenerating && generatedText && (
+              <Block display="flex" justifyContent="center" marginTop="scale500">
+                <Button
+                  kind={KIND.secondary}
+                  size={BUTTON_SIZE.compact}
+                  onClick={() => onStartGeneration(true)}
+                  startEnhancer={() => <ImLoop />}
+                >
+                  Continue generating
+                </Button>
+              </Block>
+            )}
+          </Block>
         </FormControl>
       </Block>
     </FadeIn>
@@ -275,26 +420,49 @@ export function Generator(props: GeneratorProps) {
   const form = (
     <FadeIn>
         <Block>
+          {title && (
+            <Block
+              color="contentPrimary"
+              marginBottom="scale500"
+              $style={{ fontSize: '15px', fontWeight: 600, lineHeight: '22px' }}
+            >
+              {title}
+            </Block>
+          )}
+          {/* These models only ever continue text -- they were never taught to
+              follow instructions or answer questions, so saying so up front
+              avoids the natural assumption that this is a chatbot. Skipped when
+              this generator is one of a labelled pair, where it would appear
+              twice side by side. */}
+          <Block marginBottom="scale600" display={title ? 'none' : 'block'}>
+            <Notification kind="warning">
+              <b>This model continues text; it does not answer questions.</b> It was
+              trained only to guess the next character, never to follow instructions or
+              hold a conversation.
+            </Notification>
+          </Block>
+
           <FormControl
             label="Input context"
             caption={
               model
-                ? `Optional. Enter up to ${model.params.blockSize} characters from the selected dataset, or leave it blank to generate from scratch.`
-                : 'Optional. The model will continue from this text when provided.'
+                ? `Enter up to ${model.params.blockSize} characters as the input context to the model.`
+                : 'Enter input context for the model.'
             }
             disabled={isFormDisabled}
             error={inputContextErr}
           >
             <Textarea
               value={inputContext}
-              onChange={(event) => setInputContext(event.target.value)}
-              placeholder="Enter the text that the model should continue…"
+              onChange={(event) => onInputContextChange(event.target.value)}
+              placeholder="Example: I beseech you to..."
               rows={5}
+              disabled={isFormDisabled}
             />
           </FormControl>
 
           <FlexGrid
-            flexGridColumnCount={showTechnicalDetails ? [1, 1, 4, 4] : 1}
+            flexGridColumnCount={showAdvanced ? [1, 1, 4, 4] : 1}
             flexGridColumnGap="scale600"
           >
             <FlexGridItem>
@@ -310,11 +478,12 @@ export function Generator(props: GeneratorProps) {
                   onChange={(e) => setMaxNewTokens(parseInt(e.target.value))}
                   min={1}
                   step={1}
+                  disabled={isFormDisabled}
                 />
               </FormControl>
             </FlexGridItem>
 
-            {showTechnicalDetails && (
+            {showAdvanced && (
               <>
                 <FlexGridItem>
                   <FormControl
@@ -327,8 +496,10 @@ export function Generator(props: GeneratorProps) {
                       type="number"
                       value={temperature}
                       onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                      min={1}
-                      step={1}
+                      min={0.1}
+                      max={2}
+                      step={0.1}
+                      disabled={isFormDisabled}
                     />
                   </FormControl>
                 </FlexGridItem>
@@ -346,6 +517,7 @@ export function Generator(props: GeneratorProps) {
                       onChange={(e) => setTopK(parseInt(e.target.value))}
                       min={1}
                       step={1}
+                      disabled={isFormDisabled}
                     />
                   </FormControl>
                 </FlexGridItem>
@@ -360,6 +532,7 @@ export function Generator(props: GeneratorProps) {
                     <Checkbox
                       checked={doSample}
                       onChange={(e) => setDoSample(e.target.checked)}
+                      disabled={isFormDisabled}
                       labelPlacement={LABEL_PLACEMENT.right}
                     >
                       Random sampling
@@ -369,12 +542,22 @@ export function Generator(props: GeneratorProps) {
               </>
             )}
           </FlexGrid>
+
+          <Block marginBottom="scale600">
+            <Button
+              kind={KIND.tertiary}
+              size={BUTTON_SIZE.compact}
+              onClick={() => setShowAdvanced((shown) => !shown)}
+            >
+              {showAdvanced ? 'Hide settings' : 'Show settings (randomness, top-k)'}
+            </Button>
+          </Block>
         </Block>
 
         <Block display="flex" justifyContent="center" marginTop="scale400">
           <Block flex={[1, 1, 0.5]}>
             <Button
-              onClick={onStartGeneration}
+              onClick={() => onStartGeneration(false)}
               disabled={!isGenerationAllowed}
               startEnhancer={() => <ImLoop />}
               isLoading={isGenerating}
@@ -411,7 +594,7 @@ function getInputContextError(
   dataset?: Dataset,
   model?: ModelT,
 ): string | undefined {
-  if (!inputContext.length) return undefined
+  if (!inputContext.trim().length) return 'Enter input context for the model'
   if (!dataset || !model) return undefined
   if (inputContext.length > model.params.blockSize) {
     return `Must be ${model.params.blockSize} characters or fewer`

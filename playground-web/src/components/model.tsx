@@ -2,7 +2,7 @@ import React from 'react'
 import { Block } from 'baseui/block'
 import { CONFIG, GPT, Model as ModelT, ModelVariant } from '@gpt/model'
 import { Skeleton } from 'baseui/skeleton'
-import { BackendId, DatasetId } from '../types/playground'
+import { BASE_DATASETS, BackendId, BaseDatasetId, DatasetId } from '../types/playground'
 import { Notification } from './shared/notification'
 import { SegmentedControl, Segment } from 'baseui/segmented-control'
 import { FadeIn } from './shared/fade'
@@ -24,6 +24,13 @@ type ModelProps = {
   onDownloadModelWeights?: () => void
   showTechnicalDetails?: boolean
   datasetId?: DatasetId
+  tuning?: 'full' | 'lora'
+  loraRank?: number
+  // Which pretrained checkpoint custom text is being adapted from.
+  baseDatasetId?: DatasetId
+  // True when the dataset was encoded with the pretrained model's character set,
+  // so the pretrained weights can be applied even to custom text.
+  usesBaseVocabulary?: boolean
 }
 
 export function Model(props: ModelProps) {
@@ -35,11 +42,15 @@ export function Model(props: ModelProps) {
     onDownloadModelWeights = () => {},
     showTechnicalDetails = false,
     datasetId,
+    tuning = 'full',
+    loraRank = 4,
+    baseDatasetId = 'shakespeare',
+    usesBaseVocabulary = false,
   } = props
 
   const { enqueue } = useSnackbar()
 
-  const [modelVariant, setModelVariant] = React.useState<ModelVariant>('gpt-nano')
+  const [modelVariant, setModelVariant] = React.useState<ModelVariant>('gpt-micro')
   const [errorMessage, setErrorMessage] = React.useState<string>()
   const [isLoading, setIsLoading] = React.useState<boolean>(false)
   const [paramsCount, setParamsCount] = React.useState<number>()
@@ -74,14 +85,28 @@ export function Model(props: ModelProps) {
         nextModel = GPT({
           ...nextModelConfig,
           vocabSize: requestedVocabSize,
-          tokenIndexShift: requestedDatasetId === 'custom' ? 1 : 0,
+          // Custom character models are trained fresh and reserve token 0 for
+          // padding. When custom text is instead encoded with the pretrained
+          // model's vocabulary, the shift has to match what those weights were
+          // trained with, or every predicted class is off by one.
+          tokenIndexShift: requestedDatasetId === 'custom' && !usesBaseVocabulary ? 1 : 0,
+          tuning,
+          loraRank,
         })
         nextModel.build() // Initialize weights
         const { params } = nextModel.summary()
-        const weightsFileName =
-          requestedDatasetId === 'shakespeare'
-            ? MODEL_WEIGHTS[nextModelVariant]
-            : undefined
+        // Which checkpoint's weights fit this data. A built-in dataset uses its
+        // own; custom text only fits a checkpoint when it was encoded with that
+        // checkpoint's vocabulary.
+        const weightsDatasetId: DatasetId | undefined =
+          requestedDatasetId === 'custom'
+            ? usesBaseVocabulary
+              ? baseDatasetId
+              : undefined
+            : requestedDatasetId
+        const weightsFileName = weightsDatasetId
+          ? MODEL_WEIGHTS[nextModelVariant]?.[weightsDatasetId]
+          : undefined
         if (weightsFileName && nextModel.setWeights) {
           const response = await fetch(`${MODEL_WEIGHTS_BASE_URL}${weightsFileName}`)
           if (!response.ok) {
@@ -117,7 +142,9 @@ export function Model(props: ModelProps) {
         setParamsCount(params)
         if (weightsFileName) {
           enqueue({
-            message: `${MODELS[nextModelVariant]?.label} weights loaded automatically`,
+            message: weightsDatasetId
+              ? `The ${BASE_DATASETS[weightsDatasetId as BaseDatasetId].label} model is ready`
+              : 'Model ready',
             startEnhancer: ({ size }) => <FaCheck size={size} />,
           })
         }
@@ -277,6 +304,16 @@ export function Model(props: ModelProps) {
     }
   }, [model, backend, vocabSize, datasetId])
 
+  // The adapters are created when the model is built, so switching between a
+  // full fine-tune and LoRA (or changing the rank) has to rebuild it.
+  const previousTuning = React.useRef(`${tuning}:${loraRank}`)
+  React.useEffect(() => {
+    const next = `${tuning}:${loraRank}`
+    if (previousTuning.current === next) return
+    previousTuning.current = next
+    if (backend && vocabSize) onModelChange(modelVariant)
+  }, [tuning, loraRank])
+
   React.useEffect(() => {
     return () => {
       initializationId.current += 1
@@ -299,18 +336,31 @@ export function Model(props: ModelProps) {
   )
 }
 
+// Only Micro is offered for now: it is the smallest checkpoint whose writing is
+// clearly recognisable as the style it was trained on, which is the whole point
+// of putting two of them side by side.
 const MODELS: Partial<
   Record<ModelVariant, { label: string; description?: React.ReactNode }>
 > = {
-  'gpt-nano': {
-    label: 'Nano',
-  },
-  'gpt-pico': {
-    label: 'Pico',
+  'gpt-micro': {
+    label: 'Micro',
   },
 }
 
-const MODEL_WEIGHTS: Partial<Record<ModelVariant, string>> = {
-  'gpt-pico': 'gpt-pico--shakespeare--2p13.json',
-  'gpt-nano': 'gpt-nano--shakespeare--1p80.json',
+/**
+ * Pretrained weights, keyed by model size *and* the dataset they were trained
+ * on -- the same size trained on different text is a different checkpoint, with
+ * its own vocabulary.
+ */
+const MODEL_WEIGHTS: Partial<Record<ModelVariant, Partial<Record<DatasetId, string>>>> = {
+  'gpt-micro': {
+    shakespeare: 'gpt-micro--shakespeare--1p55.json',
+    recipes: 'gpt-micro--recipes--0p63.json',
+  },
+  'gpt-nano': {
+    shakespeare: 'gpt-nano--shakespeare--1p80.json',
+  },
+  'gpt-pico': {
+    shakespeare: 'gpt-pico--shakespeare--2p13.json',
+  },
 }

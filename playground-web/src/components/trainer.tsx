@@ -5,7 +5,7 @@ import { Skeleton } from 'baseui/skeleton'
 import { Notification } from './shared/notification'
 import { FadeIn } from './shared/fade'
 import { FormControl } from 'baseui/form-control'
-import { Input } from 'baseui/input'
+import { Slider } from 'baseui/slider'
 import { FlexGrid, FlexGridItem } from 'baseui/flex-grid'
 import { Button, KIND } from 'baseui/button'
 import { IoPlay } from 'react-icons/io5'
@@ -22,6 +22,11 @@ type TrainerProps = {
   dataset: Dataset | undefined
   model: ModelT | undefined
   simplified?: boolean
+  // Shown so the learner can tell whether this is running on the graphics card
+  // or falling back to something much slower.
+  backend?: string
+  onTrainingComplete?: () => void
+  onTrainingStateChange?: (isTraining: boolean) => void
 }
 
 type LossPoint = { step: number; loss: number }
@@ -31,10 +36,83 @@ const testLossColor = colors.orange400
 const trainDataSeriesId = 'Train Loss'
 const testDataSeriesId = 'Test Loss'
 
-export function Trainer(props: TrainerProps) {
-  const { model, dataset, simplified = false } = props
+// Kept as strings so the values round-trip exactly through the existing
+// `learningRate` state without picking up float formatting noise.
+const LEARNING_RATES = [
+  '0.0001',
+  '0.0002',
+  '0.0005',
+  '0.001',
+  '0.002',
+  '0.003',
+  '0.005',
+  '0.01',
+]
 
-  const [batchSize, setBatchSize] = React.useState<number>(8)
+type ParamSliderProps = {
+  value: number
+  onChange: (value: number) => void
+  min: number
+  max: number
+  step: number
+  disabled?: boolean
+  formatValue?: (value: number) => string
+}
+
+function ParamSlider(props: ParamSliderProps) {
+  const { value, onChange, min, max, step, disabled, formatValue } = props
+  const label = formatValue ? formatValue(value) : String(value)
+
+  return (
+    <Block>
+      <Slider
+        value={[value]}
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+        // `onChange` fires continuously while dragging; the parent state is
+        // cheap to update and the training form reads it only on start.
+        onChange={({ value: next }) => {
+          if (next && next.length) {
+            onChange(next[0])
+          }
+        }}
+        overrides={{
+          Root: { style: { paddingTop: 0 } },
+          InnerThumb: () => null,
+          ThumbValue: () => null,
+          Tick: () => null,
+        }}
+      />
+      <Block
+        display="flex"
+        justifyContent="space-between"
+        color="contentSecondary"
+        $style={{ fontSize: '12px', lineHeight: '16px' }}
+      >
+        <span>{formatValue ? formatValue(min) : min}</span>
+        <b style={{ color: trainLossColor }}>{label}</b>
+        <span>{formatValue ? formatValue(max) : max}</span>
+      </Block>
+    </Block>
+  )
+}
+
+export function Trainer(props: TrainerProps) {
+  const {
+    model,
+    dataset,
+    simplified = false,
+    backend,
+    onTrainingComplete,
+    onTrainingStateChange = () => {},
+  } = props
+
+  // Measured: doubling the batch costs ~1.8x the time per step, so a step is
+  // very nearly compute-bound rather than dispatch-bound. Batch 16 is a modest
+  // net win in samples/second; going much higher just makes each step slower.
+  const [batchSize, setBatchSize] = React.useState<number>(16)
   const [maxEpochs, setMaxEpochs] = React.useState<number>(2000)
   const [learningRate, setLearningRate] = React.useState<string>('0.001')
   const [evalInterval, setEvalInterval] = React.useState<number>(200)
@@ -48,7 +126,9 @@ export function Trainer(props: TrainerProps) {
 
   const [isTraining, setIsTRaining] = React.useState<boolean>(false)
   const [isStopRequested, setIsStopRequested] = React.useState<boolean>(false)
+  const [didStop, setDidStop] = React.useState<boolean>(false)
   const isStopRequestedRef = React.useRef<boolean>(false)
+  const isMountedRef = React.useRef(true)
 
   const [isLoading, setIsLoading] = React.useState<boolean>()
   const [errorMessage, setErrorMessage] = React.useState<string>()
@@ -70,14 +150,25 @@ export function Trainer(props: TrainerProps) {
     evalIntervalErr ||
     evalIterationsErr
 
-  const effectiveMaxEpochs = simplified ? 400 : maxEpochs
-  const effectiveEvalInterval = simplified ? 100 : evalInterval
-  const effectiveEvalIterations = simplified ? 20 : evalIterations
+  // Adapting a pretrained model needs far fewer steps than training one from
+  // scratch: the style starts showing within a few dozen. Overshooting is not
+  // neutral -- the adapter drifts towards reproducing the learner's text and the
+  // base voice it was supposed to blend with dissolves into gibberish.
+  //
+  // The smaller batch roughly halves the cost of a step. Gradients get noisier,
+  // which matters little when only a few thousand adapter weights are moving.
+  const effectiveMaxEpochs = simplified ? 50 : maxEpochs
+  const effectiveEvalInterval = simplified ? 20 : evalInterval
+  const effectiveEvalIterations = simplified ? 3 : evalIterations
+  const effectiveBatchSize = simplified ? 8 : batchSize
 
   const onStartTraining = () => {
     isStopRequestedRef.current = false
     setIsStopRequested(false)
+    setDidStop(false)
+    setErrorMessage(undefined)
     setIsTRaining(true)
+    onTrainingStateChange(true)
 
     setEpoch(0)
     setTrainLosses([])
@@ -97,12 +188,20 @@ export function Trainer(props: TrainerProps) {
         if (!model) {
           throw new Error('Cannot start training because model is empty')
         }
+        // The generators switch the adapters off to show the untouched model.
+        // Training has to switch them back on: with them off the loss does not
+        // depend on the adapter weights at all, and tf.js rejects the step with
+        // "Cannot find a connection between any variable and the result of the
+        // loss function" -- which looks like training finishing suspiciously fast.
+        model.setLoRAEnabled?.(true)
+
         const learningRateNum = parseFloat(learningRate)
         const trainer = ModelTrainer({
           model,
           dataset,
           callbacks: {
             onEval: (params) => {
+              if (!isMountedRef.current) return
               setEpoch(params.step)
               const trainLossPoint: LossPoint = {
                 step: params.step,
@@ -124,25 +223,31 @@ export function Trainer(props: TrainerProps) {
             evalInterval: effectiveEvalInterval,
             evalIterations: effectiveEvalIterations,
             maxIters: effectiveMaxEpochs,
-            batchSize,
+            batchSize: effectiveBatchSize,
             blockSize: model.params.blockSize,
           },
         })
         await trainer.train()
+        if (isMountedRef.current && !isStopRequestedRef.current) {
+          onTrainingComplete?.()
+        }
       } catch (err) {
-        setErrorMessage((err as Error).message)
+        if (isMountedRef.current) setErrorMessage((err as Error).message)
       }
-      setTrainStopTime(performance.now())
-      setIsTRaining(false)
-      isStopRequestedRef.current = false
-      setIsStopRequested(false)
+      if (isMountedRef.current) {
+        setDidStop(isStopRequestedRef.current)
+        setTrainStopTime(performance.now())
+        setIsTRaining(false)
+        onTrainingStateChange(false)
+        isStopRequestedRef.current = false
+        setIsStopRequested(false)
+      }
     }, 0)
   }
 
   const onStopTraining = () => {
     isStopRequestedRef.current = true
     setIsStopRequested(true)
-    setIsTRaining(false)
   }
 
   const onFormValidate = () => {
@@ -235,12 +340,13 @@ export function Trainer(props: TrainerProps) {
               disabled={isFormDisabled}
               error={batchSizeErr}
             >
-              <Input
-                type="number"
+              <ParamSlider
                 value={batchSize}
-                onChange={(e) => setBatchSize(parseInt(e.target.value))}
+                onChange={setBatchSize}
                 min={1}
+                max={128}
                 step={1}
+                disabled={isFormDisabled}
               />
             </FormControl>
           </FlexGridItem>
@@ -252,12 +358,13 @@ export function Trainer(props: TrainerProps) {
               disabled={isFormDisabled}
               error={maxEpochsErr}
             >
-              <Input
-                type="number"
+              <ParamSlider
                 value={maxEpochs}
-                onChange={(e) => setMaxEpochs(parseInt(e.target.value))}
-                min={1}
-                step={1}
+                onChange={setMaxEpochs}
+                min={100}
+                max={5000}
+                step={100}
+                disabled={isFormDisabled}
               />
             </FormControl>
           </FlexGridItem>
@@ -269,11 +376,18 @@ export function Trainer(props: TrainerProps) {
               disabled={isFormDisabled}
               error={learningRateErr}
             >
-              <Input
-                type="string"
-                value={learningRate}
-                onChange={(e) => setLearningRate(e.target.value)}
+              {/*
+                Learning rate is useful across orders of magnitude, so a linear
+                slider is the wrong control. Step through a preset ladder instead.
+              */}
+              <ParamSlider
+                value={Math.max(0, LEARNING_RATES.indexOf(learningRate))}
+                onChange={(index) => setLearningRate(LEARNING_RATES[index])}
                 min={0}
+                max={LEARNING_RATES.length - 1}
+                step={1}
+                disabled={isFormDisabled}
+                formatValue={(index) => LEARNING_RATES[index]}
               />
             </FormControl>
           </FlexGridItem>
@@ -285,12 +399,13 @@ export function Trainer(props: TrainerProps) {
               disabled={isFormDisabled}
               error={evalIntervalErr}
             >
-              <Input
-                type="number"
+              <ParamSlider
                 value={evalInterval}
-                onChange={(e) => setEvalInterval(parseInt(e.target.value))}
-                min={1}
-                step={1}
+                onChange={setEvalInterval}
+                min={25}
+                max={1000}
+                step={25}
+                disabled={isFormDisabled}
               />
             </FormControl>
           </FlexGridItem>
@@ -302,12 +417,13 @@ export function Trainer(props: TrainerProps) {
               disabled={isFormDisabled}
               error={evalIterationsErr}
             >
-              <Input
-                type="number"
+              <ParamSlider
                 value={evalIterations}
-                onChange={(e) => setEvalIterations(parseInt(e.target.value))}
+                onChange={setEvalIterations}
                 min={1}
+                max={100}
                 step={1}
+                disabled={isFormDisabled}
               />
             </FormControl>
           </FlexGridItem>
@@ -360,7 +476,8 @@ export function Trainer(props: TrainerProps) {
             color="contentSecondary"
             $style={{ fontSize: '14px', lineHeight: '20px' }}
           >
-            Enter some custom text before starting training.
+            Add at least 200 characters above. The button will enable as soon as your text
+            and the selected model are ready.
           </Block>
         )}
 
@@ -552,6 +669,20 @@ export function Trainer(props: TrainerProps) {
     </FadeIn>
   )
 
+  // The clearest evidence that training actually happened. If these two numbers
+  // are the same, no gradient step changed anything and saying so beats a green
+  // tick that means nothing.
+  const firstLoss = trainLosses.length ? trainLosses[0].loss : undefined
+  const lastLoss = trainLosses.length ? trainLosses[trainLosses.length - 1].loss : undefined
+  const learned =
+    firstLoss !== undefined && lastLoss !== undefined && Math.abs(firstLoss - lastLoss) > 0.01
+
+  const backendNote = simplified && !isTraining && epoch === 0 && (
+    <Block marginTop="scale400" color="contentSecondary" $style={{ fontSize: '13px', lineHeight: '18px' }}>
+      This can take a few minutes. Leave the tab open and visible while it runs.
+    </Block>
+  )
+
   const simplifiedProgress = (isTraining || epoch > 0) && (
     <FadeIn>
       <Block marginTop="scale700">
@@ -567,13 +698,47 @@ export function Trainer(props: TrainerProps) {
               ? `Learning from your text… ${Math.round(
                   (value / effectiveMaxEpochs) * 100,
                 )}%`
-              : 'Training complete'
+              : didStop
+                ? 'Training stopped'
+                : 'Training complete'
           }
         />
+
+        {/* Training takes a while, so show the clock running rather than leaving
+            the learner wondering whether anything is happening. */}
+        {trainTimeSoFar !== undefined && (
+          <Block
+            display="flex"
+            justifyContent="space-between"
+            color="contentSecondary"
+            marginTop="scale300"
+            $style={{ fontSize: '13px', lineHeight: '18px' }}
+          >
+            <Block display="flex" gridGap="scale200">
+              <span>Time so far:</span>
+              <Clock timeMs={trainTimeSoFar} animated={isTraining} />
+            </Block>
+            {isTraining && trainTimeLeft !== undefined && (
+              <span>about {formatTime(trainTimeLeft)} left</span>
+            )}
+          </Block>
+        )}
+
         {!isTraining && epoch > 0 && (
           <Block marginTop="scale400">
-            <Notification kind="positive">
-              Training is complete. You can generate text in the next step.
+            <Notification kind={didStop ? 'info' : learned ? 'positive' : 'warning'}>
+              {didStop ? (
+                <>Training stopped. You can start again whenever you are ready.</>
+              ) : learned ? (
+                <>
+                  Training is complete. Compare the before and after in the next tab.
+                </>
+              ) : (
+                <>
+                  Training finished, but nothing really changed — it probably did not learn
+                  anything. Try more text, or reload the page and start again.
+                </>
+              )}
             </Notification>
           </Block>
         )}
@@ -585,10 +750,20 @@ export function Trainer(props: TrainerProps) {
     onFormValidate()
   }, [batchSize, maxEpochs, learningRate, evalInterval, evalIterations])
 
+  React.useEffect(() => {
+    isMountedRef.current = true
+    return () => {
+      isMountedRef.current = false
+      isStopRequestedRef.current = true
+      onTrainingStateChange(false)
+    }
+  }, [])
+
   return (
     <Block>
       {loader}
       {simplified ? simplifiedTraining : trainingParams}
+      {backendNote}
       {error}
       {simplified ? simplifiedProgress : trainingProgress}
     </Block>

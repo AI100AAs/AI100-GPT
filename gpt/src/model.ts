@@ -14,11 +14,16 @@
  */
 import * as tf from '@tensorflow/tfjs'
 import { Layer, Model, ModelParams, OptimizerParams } from './types'
-import { countParams, dispose, withLayerHelpers, withModelHelpers } from './utils'
+import { countParams, dispose, withLayerHelpers, withModelHelpers, yieldToBrowser } from './utils'
 
 // GPT Language Model
 export function GPT(params: ModelParams): Model {
-  const { nLayer, nHead, nEmbd, vocabSize, blockSize, tokenIndexShift = 0, embdDropout = 0.1, residDropout = 0.1, attnDropout = 0.1 } = params
+  const { nLayer, nHead, nEmbd, vocabSize, blockSize, tokenIndexShift = 0, embdDropout = 0.1, residDropout = 0.1, attnDropout = 0.1, tuning = 'full' } = params
+
+  const loraRank = Math.max(1, Math.round(params.loraRank ?? 4))
+  // Defaults to the rank so the scale is 1 and the rank knob changes capacity only.
+  const loraAlpha = params.loraAlpha ?? loraRank
+  const lora = tuning === 'lora' ? { rank: loraRank, alpha: loraAlpha } : undefined
 
   let modelIsWarm = false // Whether model weights are initialized yet or not
 
@@ -27,7 +32,7 @@ export function GPT(params: ModelParams): Model {
     wpe: tf.layers.embedding({ name: 'wpe', inputDim: blockSize, outputDim: nEmbd, embeddingsInitializer, inputShape: [blockSize] }), // Weight position embedding
     drop: tf.layers.dropout({ name: 'drop', rate: embdDropout }),
     add: tf.layers.add({ name: 'add' }), // It will add token and position embeddings
-    h: Array.from({ length: nLayer }, (_, i) => Block({ nEmbd, nHead, blockSize, attnDropout, residDropout, nLayer, name: `block${i + 1}` })), // Blocks
+    h: Array.from({ length: nLayer }, (_, i) => Block({ nEmbd, nHead, blockSize, attnDropout, residDropout, nLayer, name: `block${i + 1}`, lora })), // Blocks
     lnF: tf.layers.layerNormalization({ name: 'lnF' }), // Final normalization layer
   }
   const lmHead = tf.layers.dense({ name: 'lmHead', units: vocabSize, useBias: false, kernelInitializer })
@@ -144,7 +149,7 @@ export function GPT(params: ModelParams): Model {
         dispose([idxNext, idxPrev])
 
         // For browsers: unblock the main thread (allow the UI to be re-rendered)
-        await tf.nextFrame()
+        await yieldToBrowser()
       }
       return idx
     },
@@ -167,17 +172,76 @@ export function GPT(params: ModelParams): Model {
       const params = countParams([ wte, wpe, add, drop, lnF, ...h ])
       return { params }
     }),
+
+    /**
+     * The adapter on its own -- a few thin matrices, a small fraction of the
+     * model. The frozen base is deliberately not included: it is already on the
+     * page, and shipping only the difference is the whole point of the method.
+     */
+    getLoRAWeights: () => {
+      const adapters = transformer.h.flatMap((block) => block.getLoRA?.() ?? [])
+      return {
+        rank: loraRank,
+        alpha: loraAlpha,
+        adapters: adapters.map((adapter) => ({
+          a: Array.from(adapter.a.dataSync()),
+          b: Array.from(adapter.b.dataSync()),
+        })),
+      }
+    },
+
+    setLoRAWeights: (weights) => {
+      const adapters = transformer.h.flatMap((block) => block.getLoRA?.() ?? [])
+      if (!adapters.length) throw new Error('This model has no adapters to load into.')
+      if (weights.rank !== loraRank) {
+        throw new Error(
+          `This style was trained with adapter size ${weights.rank}, but the model is using ${loraRank}.`,
+        )
+      }
+      if (weights.adapters.length !== adapters.length) {
+        throw new Error('This style does not match the shape of the current model.')
+      }
+      adapters.forEach((adapter, index) => {
+        const saved = weights.adapters[index]
+        if (saved.a.length !== adapter.a.size || saved.b.length !== adapter.b.size) {
+          throw new Error('This style does not match the shape of the current model.')
+        }
+        // `assign` copies values into the variables but does not own the source
+        // tensors. Keep them inside a tidy so loading styles repeatedly does not
+        // accumulate temporary tensors in browser memory.
+        tf.tidy(() => {
+          adapter.a.assign(tf.tensor(saved.a, adapter.a.shape))
+          adapter.b.assign(tf.tensor(saved.b, adapter.b.shape))
+        })
+      })
+    },
+
+    setLoRAEnabled: (enabled: boolean) => {
+      for (const block of transformer.h) {
+        for (const adapter of block.getLoRA?.() ?? []) {
+          ;(adapter as LoRA).enabled = enabled
+        }
+      }
+    },
+
+    trainableVariables: () => {
+      if (tuning !== 'lora') return undefined // full fine-tune: every weight
+      const adapters = transformer.h.flatMap((block) => block.getLoRA?.() ?? [])
+      const variables: tf.Variable[] = []
+      for (const adapter of adapters) variables.push(adapter.a, adapter.b)
+      return variables
+    },
   }
 
   return withModelHelpers(model, [transformer.wte, transformer.wpe, transformer.add, transformer.drop, transformer.lnF, transformer.h, lmHead])
 }
 
 // Transformer block: communication followed by computation
-function Block(args: { nEmbd: number; nHead: number; blockSize: number; residDropout: number; attnDropout: number; nLayer: number, name: string }): Layer {
-  const { nEmbd, nHead, blockSize, residDropout, attnDropout, nLayer, name } = args
+function Block(args: { nEmbd: number; nHead: number; blockSize: number; residDropout: number; attnDropout: number; nLayer: number, name: string, lora?: { rank: number; alpha: number } }): Layer {
+  const { nEmbd, nHead, blockSize, residDropout, attnDropout, nLayer, name, lora } = args
 
   const ln1 = tf.layers.layerNormalization({ name: `${name}-ln1` })
-  const attn = CausalSelfAttention({ name: `${name}-attn`, nEmbd, blockSize, nHead, residDropout, attnDropout, nLayer }) // Self-attention head
+  const attn = CausalSelfAttention({ name: `${name}-attn`, nEmbd, blockSize, nHead, residDropout, attnDropout, nLayer, lora }) // Self-attention head
   const ln2 = tf.layers.layerNormalization({ name: `${name}-ln2` })
   const mlp = FeedForward({ name: `${name}-mlp`, nEmbd, residDropout, nLayer })
 
@@ -187,17 +251,72 @@ function Block(args: { nEmbd: number; nHead: number; blockSize: number; residDro
       x = x.add(mlp.apply(ln2.apply(x) as tf.Tensor))
       return x
     },
+    getLoRA: () => attn.getLoRA?.() ?? [],
   }
 
   return withLayerHelpers(block, [ln1, attn, ln2, mlp])
 }
 
+/**
+ * A low-rank adapter (LoRA) for a dense projection of shape [inDim, outDim].
+ *
+ * Rather than updating the projection's kernel, we learn two thin matrices
+ * whose product has the same shape but far fewer parameters, and add it to the
+ * projection's output. `b` starts at zero so `a . b` is exactly zero: before any
+ * training the adapted model reproduces the frozen base exactly, and everything
+ * that changes afterwards was taught by the new data. `a` is random so that `b`
+ * has a non-zero gradient on the very first step.
+ */
+export type LoRA = {
+  a: tf.Variable
+  b: tf.Variable
+  scale: number
+  outDim: number
+  params: number
+  // Lets the adapted model be compared against the untouched base without
+  // rebuilding it: turning this off makes the forward pass skip the low-rank
+  // term entirely, which is exactly the frozen model again.
+  enabled: boolean
+}
+
+function createLoRA(inDim: number, outDim: number, rank: number, alpha: number): LoRA {
+  return {
+    // Deliberately unnamed: tf.js registers variable names globally, so fixed
+    // names would make a second model in the same page fail to build.
+    a: tf.variable(tf.randomNormal([inDim, rank], 0, 0.02), true),
+    b: tf.variable(tf.zeros([rank, outDim]), true),
+    scale: alpha / rank,
+    outDim,
+    params: inDim * rank + rank * outDim,
+    enabled: true,
+  }
+}
+
+function applyLoRA(lora: LoRA | null, x: tf.Tensor, base: tf.Tensor): tf.Tensor {
+  if (!lora || !lora.enabled) return base
+  return tf.tidy(() => {
+    const shape = x.shape
+    const flat = x.reshape([-1, shape[shape.length - 1]!])
+    let delta = tf.matMul(tf.matMul(flat, lora.a), lora.b)
+    if (lora.scale !== 1) delta = delta.mul(tf.scalar(lora.scale))
+    return base.add(delta.reshape([...shape.slice(0, -1), lora.outDim]))
+  })
+}
+
 // Multiple heads of self-attention in parallel
-function CausalSelfAttention(args: { nEmbd: number; blockSize: number; nHead: number; attnDropout: number; residDropout: number; nLayer: number, name: string }): Layer {
-  const { nHead, blockSize, nEmbd, attnDropout, residDropout, nLayer, name } = args
+function CausalSelfAttention(args: { nEmbd: number; blockSize: number; nHead: number; attnDropout: number; residDropout: number; nLayer: number, name: string, lora?: { rank: number; alpha: number } }): Layer {
+  const { nHead, blockSize, nEmbd, attnDropout, residDropout, nLayer, name, lora } = args
 
   if (nEmbd % nHead !== 0) throw new Error(`Cannot calculate head size: nEmbd % nHead !== 0`)
   const headSize = nEmbd / nHead
+
+  // Only the attention projections are adapted, which is what the LoRA paper
+  // does (query, key, value and output). It also avoids a subtlety in the
+  // feed-forward: its first dense layer folds `gelu_new` in, so an adapter on
+  // that layer's output would be added after the activation rather than to the
+  // projection itself, which is a different operation.
+  const cAttnLora = lora ? createLoRA(nEmbd, nEmbd * 3, lora.rank, lora.alpha) : null
+  const cProjLora = lora ? createLoRA(nEmbd, nEmbd, lora.rank, lora.alpha) : null
 
   // The key, query, value projections for all heads, but in a batch (combined into one dense layer for efficiency)
   const cAttn = tf.layers.dense({ name: `${name}-cAttn`, inputDim: nEmbd, units: nEmbd * 3, useBias: false, kernelInitializer })
@@ -218,7 +337,7 @@ function CausalSelfAttention(args: { nEmbd: number; blockSize: number; nHead: nu
       const [B, T, C] = x.shape
 
       // Calculate query, key, values for all heads in batch and move head forward to be the batch dim
-      const qkv = cAttn.apply(x) as tf.Tensor
+      const qkv = applyLoRA(cAttnLora, x, cAttn.apply(x) as tf.Tensor)
       const q = qkv.slice([0, 0, 0], [-1, -1, C]).reshape([B, T, nHead, C / nHead]).transpose([0, 2, 1, 3]) // (B, nh, T, hs)
       const k = qkv.slice([0, 0, C], [-1, -1, C]).reshape([B, T, nHead, C / nHead]).transpose([0, 2, 1, 3]) // (B, nh, T, hs)
       const v = qkv.slice([0, 0, 2 * C], [-1, -1, C]).reshape([B, T, nHead, C / nHead]).transpose([0, 2, 1, 3]) // (B, nh, T, hs)
@@ -232,13 +351,28 @@ function CausalSelfAttention(args: { nEmbd: number; blockSize: number; nHead: nu
       y = y.transpose([0, 2, 1, 3]).reshape([B, T, C]) // Re-assemble all head outputs side by side (reshape to [B, T, C])
 
       // Output projection
-      y = cProj.apply(y) as tf.Tensor
+      y = applyLoRA(cProjLora, y, cProj.apply(y) as tf.Tensor)
       y = residDrop.apply(y) as tf.Tensor
       return y
     }),
+    getLoRA: () => [cAttnLora, cProjLora].filter(Boolean) as LoRA[],
   }
 
-  return withLayerHelpers(multiHeadAttention, [cAttn, cProj, attnDrop, residDrop, bias])
+  // The adapters are plain variables rather than layers, so they are disposed
+  // here instead of being passed as children -- `flatChildren` would otherwise
+  // mistake them for layers (a tf.Variable also has a `trainable` field).
+  const wrapped = withLayerHelpers(multiHeadAttention, [cAttn, cProj, attnDrop, residDrop, bias])
+  const disposeLayers = wrapped.dispose
+  return {
+    ...wrapped,
+    dispose: () => {
+      for (const adapter of multiHeadAttention.getLoRA?.() ?? []) {
+        adapter.a.dispose()
+        adapter.b.dispose()
+      }
+      disposeLayers?.()
+    },
+  }
 }
 
 // A simple linear layer followed by a non-linearity

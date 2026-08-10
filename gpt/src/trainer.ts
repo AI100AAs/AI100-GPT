@@ -9,34 +9,7 @@
  */
 import * as tf from '@tensorflow/tfjs'
 import { Dataset, Model, TrainingCallbacks, TrainingParams } from './types'
-
-/**
- * Hands control back to the browser so the UI can repaint and so a stop request
- * can be observed.
- *
- * `tf.nextFrame()` is built on `requestAnimationFrame`, which does not fire at
- * all while the document is hidden -- a backgrounded, minimised or occluded tab.
- * Awaiting it there never resolves and training halts after a single iteration,
- * so it is only safe to use while the page is actually visible.
- *
- * A `MessageChannel` round-trip is the fallback: unlike `setTimeout`, it is not
- * clamped to 1s in background tabs, so training continues at full speed with the
- * tab hidden.
- */
-function yieldToBrowser(): Promise<void> {
-  const isHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
-  if (!isHidden) {
-    return tf.nextFrame()
-  }
-  return new Promise((resolve) => {
-    const channel = new MessageChannel()
-    channel.port1.onmessage = () => {
-      channel.port1.close()
-      resolve()
-    }
-    channel.port2.postMessage(undefined)
-  })
-}
+import { yieldToBrowser } from './utils'
 
 export function Trainer(args: { model: Model, dataset: Dataset, callbacks: TrainingCallbacks, params: TrainingParams }) {
   const { model, dataset, callbacks, params } = args 
@@ -44,6 +17,9 @@ export function Trainer(args: { model: Model, dataset: Dataset, callbacks: Train
 
   const train = async () => {
     const optimizer = model.optimizer({ learningRate })
+    // Undefined means "every trainable weight". In LoRA mode this is the list of
+    // adapter variables, so the frozen base cannot be updated.
+    const trainableVariables = model.trainableVariables?.()
 
     const estimateLoss = () => tf.tidy(() => {
       const result: { train?: tf.Tensor; test?: tf.Tensor } = {}
@@ -77,10 +53,14 @@ export function Trainer(args: { model: Model, dataset: Dataset, callbacks: Train
       const { x, y } = dataset.getBatch({ split: 'train', batchSize, blockSize })
 
       // Evaluate the loss
-      optimizer.minimize(() => {
-        const loss = model.loss(x, y)
-        return loss.squeeze()
-      })
+      optimizer.minimize(
+        () => {
+          const loss = model.loss(x, y)
+          return loss.squeeze()
+        },
+        false,
+        trainableVariables,
+      )
 
       x.dispose()
       y.dispose()

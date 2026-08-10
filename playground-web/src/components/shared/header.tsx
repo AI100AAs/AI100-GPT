@@ -22,8 +22,22 @@ export function Header(props: HeaderProps) {
   const { isDark = false, onToggleDark = () => {} } = props
 
   return (
-    <Block marginBottom="scale800">
-      <HeaderNavigation overrides={{ Root: { style: { borderBottomWidth: '2px' } } }}>
+    <Block
+      $style={{ position: 'sticky', top: 0, zIndex: 10 }}
+    >
+      <HeaderNavigation
+        overrides={{
+          Root: {
+            style: ({ $theme }) => ({
+              borderBottomWidth: '1px',
+              borderBottomColor: $theme.colors.borderOpaque,
+              backgroundColor: $theme.colors.backgroundPrimary,
+              paddingLeft: 'max(20px, calc((100vw - 780px) / 2))',
+              paddingRight: 'max(20px, calc((100vw - 780px) / 2))',
+            }),
+          },
+        }}
+      >
         <StyledNavigationList $align={ALIGN.left}>
           <StyledNavigationItem $style={{ paddingLeft: WINDOW_PADDING_HORIZONTAL }}>
             <Block
@@ -55,7 +69,13 @@ export function Header(props: HeaderProps) {
 
         <StyledNavigationList $align={ALIGN.right}>
           <StyledNavigationItem $style={{ paddingRight: WINDOW_PADDING_HORIZONTAL }}>
-            <Button onClick={onToggleDark} size={SIZE.compact} kind={KIND.tertiary}>
+            <Button
+              onClick={onToggleDark}
+              size={SIZE.compact}
+              kind={KIND.tertiary}
+              aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
               {isDark ? <IoSunny size={18} /> : <IoMoon size={18} />}
             </Button>
           </StyledNavigationItem>

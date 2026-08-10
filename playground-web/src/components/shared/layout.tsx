@@ -3,16 +3,27 @@ import React from 'react'
 import { Client as Styletron } from 'styletron-engine-monolithic'
 import { Provider as StyletronProvider } from 'styletron-react'
 import { BaseProvider, createLightTheme, createDarkTheme } from 'baseui'
-import { SnackbarProvider } from 'baseui/snackbar'
+import { SnackbarProvider, PLACEMENT } from 'baseui/snackbar'
 import './layout.css'
 import { colors } from 'baseui/tokens'
 import { Header } from './header'
+import { MAX_CONTENT_WIDTH } from '../../config/theme'
 
 const engine = new Styletron()
 
+// A slightly warmer, lower-contrast light palette. Base Web's default is very
+// stark white-on-white, which makes every card edge shout.
 const lightTheme = createLightTheme({
   colors: {
     linkVisited: colors.black,
+    backgroundPrimary: '#FFFFFF',
+    backgroundSecondary: '#F7F7F8',
+    backgroundTertiary: '#EFEFF1',
+    contentPrimary: '#1F2328',
+    contentSecondary: '#5B6169',
+    contentTertiary: '#848B94',
+    borderOpaque: '#E4E4E7',
+    borderTransparent: 'rgba(31, 35, 40, 0.08)',
   },
 })
 
@@ -74,6 +85,8 @@ const darkTheme = createDarkTheme({
 })
 
 const DARK_BACKGROUND = '#0D1218'
+const LIGHT_BACKGROUND = '#FAFAFA'
+const THEME_STORAGE_KEY = 'ai100-gpt-theme'
 
 type LayoutProps = {
   children: React.ReactNode
@@ -84,29 +97,49 @@ export function Layout(props: LayoutProps) {
 
   const [isDark, setIsDark] = React.useState(() => {
     if (typeof window !== 'undefined') {
+      try {
+        const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY)
+        if (savedTheme === 'dark' || savedTheme === 'light') {
+          return savedTheme === 'dark'
+        }
+      } catch {
+        // Some privacy modes disable storage; the system preference still works.
+      }
       return window.matchMedia('(prefers-color-scheme: dark)').matches
     }
     return false
   })
 
   React.useEffect(() => {
-    document.body.style.backgroundColor = isDark ? DARK_BACKGROUND : '#ffffff'
+    document.body.style.backgroundColor = isDark ? DARK_BACKGROUND : LIGHT_BACKGROUND
     document.body.style.margin = '0'
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, isDark ? 'dark' : 'light')
+    } catch {
+      // Theme selection remains usable for this visit when storage is unavailable.
+    }
   }, [isDark])
 
   return (
     <StyletronProvider value={engine}>
       <BaseProvider theme={isDark ? darkTheme : lightTheme}>
-        <SnackbarProvider>
+        <SnackbarProvider placement={PLACEMENT.bottom}>
           <Block
             display="flex"
             flexDirection="column"
-            alignItems="center"
-            backgroundColor={isDark ? DARK_BACKGROUND : '#ffffff'}
+            backgroundColor={isDark ? DARK_BACKGROUND : LIGHT_BACKGROUND}
             minHeight="100vh"
           >
-            <Block display="flex" flexDirection="column" width="100%" maxWidth="1200px">
-              <Header isDark={isDark} onToggleDark={() => setIsDark((d) => !d)} />
+            {/* The bar spans the window; only the reading column is narrow. */}
+            <Header isDark={isDark} onToggleDark={() => setIsDark((d) => !d)} />
+            <Block
+              display="flex"
+              flexDirection="column"
+              width="100%"
+              maxWidth={MAX_CONTENT_WIDTH}
+              alignSelf="center"
+              paddingTop="scale800"
+            >
               {children}
             </Block>
           </Block>

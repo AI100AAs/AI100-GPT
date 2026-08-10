@@ -34,20 +34,25 @@ export function Backend(props: BackendProps) {
       // For WASM backend, set the path to the public folder where `.wasm` files are located
       setWasmPaths(BASE_PATH + '/')
 
-      // Prefer WebGPU explicitly: it is by far the fastest backend for training,
-      // and relying on tfjs' default pick can silently land us on WASM.
-      if (isWebGPUSupported()) {
+      // Walk the preference order until one backend actually activates.
+      //
+      // WASM is deliberately absent: it cannot train this model at all. The
+      // backward pass through the embedding `gather` needs `UnsortedSegmentSum`,
+      // which tfjs' WASM backend does not register, so training fails at the
+      // first optimizer step with the forward pass having looked fine. WebGL is
+      // the real fallback when WebGPU is unavailable.
+      for (const candidate of TRAINING_BACKENDS) {
+        if (candidate === 'webgpu' && !isWebGPUSupported()) continue
+        if (candidate === 'webgl' && !isWebGLSupported()) continue
         try {
           // NOTE: `setBackend` resolves to `false` on failure rather than
           // throwing, so the return value has to be checked explicitly.
-          const ok = await tf.setBackend('webgpu')
-          if (!ok) {
-            console.warn('[tfjs] WebGPU was reported as supported but could not be activated')
-          }
+          const ok = await tf.setBackend(candidate)
+          if (ok) break
+          console.warn(`[tfjs] ${candidate} reported as supported but could not be activated`)
         } catch (err) {
-          // Adapter request can still fail on paper-supported devices; fall
-          // through and let tfjs pick whatever else is available.
-          console.warn('[tfjs] WebGPU activation threw, falling back', err)
+          // Adapter/context requests can still fail on paper-supported devices.
+          console.warn(`[tfjs] ${candidate} activation threw, trying next`, err)
         }
       }
       await tf.ready()
@@ -118,7 +123,7 @@ export function Backend(props: BackendProps) {
         {(Object.keys(BACKENDS) as (keyof typeof BACKENDS)[]).map((backendId) => {
           const disabled =
             (backendId === 'webgpu' && !hasWebGPU) ||
-            (backendId === 'wasm' && !hasWASM)
+            (backendId === 'webgl' && !hasWebGL)
           return (
             <Segment
               key={backendId}
@@ -135,12 +140,12 @@ export function Backend(props: BackendProps) {
   const noGPUSupportWarning =
     !hasWebGL && !hasWebGPU ? (
       <Notification kind="warning">
-        Looks like your browser doesn't support neither WebGPU nor WebGL. Training on CPU
-        or WASM might be slow.
+        Looks like your browser supports neither WebGPU nor WebGL. Training will fall
+        back to the CPU and will be slow.
       </Notification>
     ) : null
 
-  const slowCPUWarning = ['cpu', 'wasm', 'webgl'].includes(backend || '') ? (
+  const slowCPUWarning = ['cpu', 'webgl'].includes(backend || '') ? (
     <Notification kind="warning">
       Training on <b>{backend?.toUpperCase()}</b> might be slow. The recommended setup is
       to use a device and browser that support <b>WebGPU</b>.
@@ -157,18 +162,70 @@ export function Backend(props: BackendProps) {
   )
 }
 
-// TODO: Re-enable cpu and webgl backends once performance is acceptable
+// Backends that can actually run a training step, best first. WASM is excluded:
+// it has no `UnsortedSegmentSum` kernel, so the backward pass through the
+// embedding lookup throws and training stops at the first optimizer step.
+export const TRAINING_BACKENDS: BackendId[] = ['webgpu', 'webgl', 'cpu']
+
+// Generation is forward-only, so it has no such restriction -- WASM works here
+// and can be competitive, since the per-kernel dispatch overhead that hurts the
+// GPU backends is proportionally larger on these very small tensors.
+export const INFERENCE_BACKENDS = {
+  wasm: { label: 'WASM' },
+  webgl: { label: 'WebGL' },
+  webgpu: { label: 'WebGPU' },
+}
+
+type InferenceBackendProps = {
+  backend: BackendId | undefined
+  onChange: (backend: BackendId) => void
+  disabled?: boolean
+}
+
+/**
+ * Picks the backend used for text generation. Unlike the training picker this
+ * only records a preference -- the switch happens around the generate call
+ * itself, so the trained model is left untouched on its own backend.
+ */
+export function InferenceBackend(props: InferenceBackendProps) {
+  const { backend, onChange, disabled } = props
+
+  const available: Record<string, boolean> = {
+    wasm: isWASMSupported(),
+    webgl: isWebGLSupported(),
+    webgpu: isWebGPUSupported(),
+  }
+
+  return (
+    <SegmentedControl
+      activeKey={backend}
+      disabled={disabled}
+      onChange={({ activeKey }) => onChange(activeKey as BackendId)}
+    >
+      {(Object.keys(INFERENCE_BACKENDS) as (keyof typeof INFERENCE_BACKENDS)[]).map(
+        (backendId) => (
+          <Segment
+            key={backendId}
+            disabled={!available[backendId]}
+            label={INFERENCE_BACKENDS[backendId].label}
+          />
+        ),
+      )}
+    </SegmentedControl>
+  )
+}
+
+// TODO: Re-enable the cpu backend once performance is acceptable
 export const BACKENDS = {
   // cpu: { label: 'CPU', description: <SegmentDescription><TurtleIcon width="16" /><TurtleIcon width="16" /></SegmentDescription> },
-  wasm: {
-    label: 'WASM',
+  webgl: {
+    label: 'WebGL',
     description: (
       <SegmentDescription>
-        <TurtleIcon width="16" />
+        <IoRocketSharp size={13} />
       </SegmentDescription>
     ),
   },
-  // webgl: { label: 'WebGL', description: <SegmentDescription><IoRocketSharp size={13} /></SegmentDescription> },
   webgpu: {
     label: 'WebGPU',
     description: (

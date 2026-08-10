@@ -19,6 +19,22 @@ export type ModelParams = {
   embdDropout?: number
   residDropout?: number
   attnDropout?: number
+
+  /**
+   * How the model is trained.
+   *
+   * 'full' updates every weight. 'lora' leaves them all frozen and trains a
+   * pair of thin matrices beside each attention projection instead, so a
+   * fine-tune costs a small fraction of the parameters and can be shipped on
+   * its own. LoRA only makes sense on top of a model that has already been
+   * trained: adapting a frozen *random* model has very little to work with.
+   */
+  tuning?: 'full' | 'lora'
+  // Inner dimension of the low-rank update. Higher means more capacity.
+  loraRank?: number
+  // The update is scaled by loraAlpha / loraRank. Defaults to the rank, i.e. a
+  // scale of 1, so that changing the rank changes capacity and nothing else.
+  loraAlpha?: number
 }
 
 export type Model = {
@@ -58,9 +74,32 @@ export type Model = {
   optimizer: (params: OptimizerParams) => tf.Optimizer
   build: () => void
   summary: () => { params: number }
+  /**
+   * The variables a training step is allowed to update.
+   *
+   * Undefined for a full fine-tune, meaning "every trainable weight". In LoRA
+   * mode it returns only the adapter matrices, so the frozen base cannot be
+   * changed even by accident.
+   */
+  trainableVariables?: () => tf.Variable[] | undefined
+  /**
+   * Turns the low-rank adapters on or off. With them off the model behaves
+   * exactly as the frozen pretrained one, which is what makes a before/after
+   * comparison possible without holding two copies in memory.
+   */
+  setLoRAEnabled?: (enabled: boolean) => void
+  /** Just the adapter matrices -- small enough to share as a file. */
+  getLoRAWeights?: () => LoRAWeights
+  setLoRAWeights?: (weights: LoRAWeights) => void
   dispose?: () => void
   getWeights?: () => Promise<Weights>
   setWeights?: (w: Weights) => void
+}
+
+export type LoRAWeights = {
+  rank: number
+  alpha: number
+  adapters: { a: number[]; b: number[] }[]
 }
 
 export type Layer = {
@@ -68,12 +107,23 @@ export type Layer = {
   countParams?: () => number
   dispose?: () => void
   getChildren?: () => LayerChildren
+  // Low-rank adapters owned by this layer, if any. Empty for a full fine-tune.
+  getLoRA?: () => { a: tf.Variable; b: tf.Variable; params: number; enabled: boolean }[]
 }
 
 export type DatasetParams = {
   textSource?: string
   textSourceURL?: string
   maskZero?: boolean
+  /**
+   * Use this character set instead of deriving one from the text.
+   *
+   * Needed to fine-tune a pretrained model on new text: the model's embedding
+   * and output layers are sized to the vocabulary it was trained with, so the
+   * new text has to be encoded with that same vocabulary. Characters outside it
+   * cannot be represented and are dropped (see `droppedCharacters`).
+   */
+  vocabulary?: string[]
 }
 
 export type DatasetGetBatchParams = {
@@ -89,6 +139,12 @@ export type Dataset = {
   dataSize: number
   vocabulary: string[]
   text: string
+  /**
+   * How many characters of the source text could not be encoded because they
+   * were absent from a supplied vocabulary. Always 0 when the vocabulary is
+   * derived from the text itself.
+   */
+  droppedCharacters: number
   getBatch: (args: DatasetGetBatchParams) => { x: tf.Tensor; y: tf.Tensor }
   encode: (s: string) => number[]
   decode: (a: number[]) => string

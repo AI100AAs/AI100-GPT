@@ -16,7 +16,7 @@
  */
 import * as tf from '@tensorflow/tfjs'
 import { Layer, Model, ModelParams, OptimizerParams } from './types'
-import { countParams, dispose, withLayerHelpers, withModelHelpers } from './utils'
+import { countParams, dispose, withLayerHelpers, withModelHelpers, yieldToBrowser } from './utils'
 
 // GPT Language Model
 export function GPT(params: ModelParams): Model {
@@ -154,7 +154,7 @@ export function GPT(params: ModelParams): Model {
         dispose([idxShaped, logits, lastCharLogits, probs, sampled, idxNextSliced, idxNext, oldIdx])
 
         // For browsers: unblock the main thread (allow the UI to be re-rendered)
-        await tf.nextFrame()
+        await yieldToBrowser()
       }
       return idx
     },
