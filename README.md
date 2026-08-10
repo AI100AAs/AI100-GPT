@@ -34,6 +34,13 @@ playground uses TensorFlow.js and prefers WebGPU, with WebGL or CPU fallbacks
 when needed. No account, API key, backend, hosted model, or installation is
 required to use the live playground.
 
+## Responsible use
+
+This is an experimental teaching tool, not a source of advice or reliable
+facts. The model can produce unexpected, biased, offensive, or inaccurate text.
+Review anything it generates before sharing or acting on it. The project team
+is not responsible for generated content or how it is interpreted or used.
+
 ## Run locally
 
 Development requires Node.js 20 or newer.

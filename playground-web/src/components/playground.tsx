@@ -197,6 +197,14 @@ export function Playground() {
             keeping the voice it learned first. The model runs entirely in your browser, on
             your device: your writing and generated text never leave it.
           </Block>
+          <Block marginTop="scale500">
+            <Notification kind="warning">
+              This is an experimental teaching tool. The model can produce unexpected,
+              biased, offensive, or inaccurate text. Use its output for learning only,
+              check anything it generates, and do not treat it as advice or fact. The
+              project team is not responsible for generated content or how it is used.
+            </Notification>
+          </Block>
         </Block>
 
         <Block $style={{ display: 'none' }}>
