@@ -1,15 +1,11 @@
 import React from 'react'
 import * as tf from '@tensorflow/tfjs'
-import '@tensorflow/tfjs-backend-wasm'
 import '@tensorflow/tfjs-backend-webgpu'
-import { setWasmPaths } from '@tensorflow/tfjs-backend-wasm'
 import { Block } from 'baseui/block'
 import { BackendId } from '../types/playground'
 import { ProgressBar, SIZE } from 'baseui/progress-bar'
 import { SegmentedControl, Segment } from 'baseui/segmented-control'
-import { BASE_PATH } from '../config/links'
 import { IoRocketSharp } from 'react-icons/io5'
-import { ReactComponent as TurtleIcon } from '../assets/turtle.svg'
 import { Notification } from './shared/notification'
 import { FadeIn } from './shared/fade'
 
@@ -26,14 +22,10 @@ export function Backend(props: BackendProps) {
 
   const [hasWebGL, setHasWebGL] = React.useState<boolean>()
   const [hasWebGPU, setHasWebGPU] = React.useState<boolean>()
-  const [hasWASM, setHasWASM] = React.useState<boolean>()
 
   const onBackendInit = async () => {
     setIsLoading(true)
     try {
-      // For WASM backend, set the path to the public folder where `.wasm` files are located
-      setWasmPaths(BASE_PATH + '/')
-
       // How many GPU commands tfjs queues up before submitting them. This model
       // is small enough that no single operation keeps the GPU busy for long, so
       // the cost of generating a character is dominated by how many times the
@@ -101,7 +93,6 @@ export function Backend(props: BackendProps) {
   React.useEffect(() => {
     setHasWebGL(isWebGLSupported())
     setHasWebGPU(isWebGPUSupported())
-    setHasWASM(isWASMSupported())
     onBackendInit()
   }, [])
 
@@ -177,57 +168,8 @@ export function Backend(props: BackendProps) {
 // embedding lookup throws and training stops at the first optimizer step.
 export const TRAINING_BACKENDS: BackendId[] = ['webgpu', 'webgl', 'cpu']
 
-// Generation is forward-only, so it has no such restriction -- WASM works here
-// and can be competitive, since the per-kernel dispatch overhead that hurts the
-// GPU backends is proportionally larger on these very small tensors.
-export const INFERENCE_BACKENDS = {
-  wasm: { label: 'WASM' },
-  webgl: { label: 'WebGL' },
-  webgpu: { label: 'WebGPU' },
-}
 
-type InferenceBackendProps = {
-  backend: BackendId | undefined
-  onChange: (backend: BackendId) => void
-  disabled?: boolean
-}
-
-/**
- * Picks the backend used for text generation. Unlike the training picker this
- * only records a preference -- the switch happens around the generate call
- * itself, so the trained model is left untouched on its own backend.
- */
-export function InferenceBackend(props: InferenceBackendProps) {
-  const { backend, onChange, disabled } = props
-
-  const available: Record<string, boolean> = {
-    wasm: isWASMSupported(),
-    webgl: isWebGLSupported(),
-    webgpu: isWebGPUSupported(),
-  }
-
-  return (
-    <SegmentedControl
-      activeKey={backend}
-      disabled={disabled}
-      onChange={({ activeKey }) => onChange(activeKey as BackendId)}
-    >
-      {(Object.keys(INFERENCE_BACKENDS) as (keyof typeof INFERENCE_BACKENDS)[]).map(
-        (backendId) => (
-          <Segment
-            key={backendId}
-            disabled={!available[backendId]}
-            label={INFERENCE_BACKENDS[backendId].label}
-          />
-        ),
-      )}
-    </SegmentedControl>
-  )
-}
-
-// TODO: Re-enable the cpu backend once performance is acceptable
 export const BACKENDS = {
-  // cpu: { label: 'CPU', description: <SegmentDescription><TurtleIcon width="16" /><TurtleIcon width="16" /></SegmentDescription> },
   webgl: {
     label: 'WebGL',
     description: (
@@ -276,8 +218,4 @@ function isWebGPUSupported() {
   } catch (err) {
     return false
   }
-}
-
-function isWASMSupported() {
-  return typeof WebAssembly === 'object' && typeof WebAssembly.instantiate === 'function'
 }

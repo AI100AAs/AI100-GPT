@@ -5,7 +5,6 @@ import {
   CharDataset,
   GPT,
   LoRAWeights,
-  Trainer,
   Dataset as DatasetT,
   Model as ModelT,
 } from '@gpt/model'
@@ -16,14 +15,11 @@ import { Input } from 'baseui/input'
 import { FormControl } from 'baseui/form-control'
 import { Skeleton } from 'baseui/skeleton'
 import { FlexGrid, FlexGridItem } from 'baseui/flex-grid'
-import { ProgressBar, SIZE } from 'baseui/progress-bar'
 import { IoSend } from 'react-icons/io5'
-import { RiDownloadLine } from 'react-icons/ri'
 import { Notification } from './shared/notification'
-import { BASE_DATASETS, BackendId, BaseDatasetId } from '../types/playground'
+import { BackendId, BaseDatasetId } from '../types/playground'
 import { BASE_PATH } from '../config/links'
 import { loadWeights } from '../utils/weights'
-import { saveAsFile } from '../utils/file'
 import {
   CHAT_DEFAULT_TEMPERATURE as DEFAULT_TEMPERATURE,
   CHAT_DEFAULT_TOP_K as DEFAULT_TOP_K,
@@ -38,14 +34,7 @@ import {
  * answer" and "is an answer" is the whole lesson.
  */
 
-const DEFAULT_LORA_RANK = 8
 const MODEL_VARIANT = 'gpt-micro' as const
-const RANK_OVERRIDE = (() => {
-  if (typeof window === 'undefined') return undefined
-  const asked = Number(new URLSearchParams(window.location.search).get('chat-rank'))
-  return Number.isInteger(asked) && asked > 0 ? asked : undefined
-})()
-const TRAINING_LORA_RANK = RANK_OVERRIDE ?? DEFAULT_LORA_RANK
 
 /**
  * How each base model is asked a question.
@@ -60,11 +49,7 @@ type ChatStyleId = BaseDatasetId
 type ChatStyle = {
   label: string
   weightsFile: string
-  corpusFile: string
-  /** Base name, without the rank suffix, for both fetching and downloading. */
-  adapterBase: string
-  /** Rank of the adapter that ships with the page. */
-  adapterRank: number
+  adapterFile: string
   /** A turn. Leave the answer out to stop where the model should start writing. */
   turn: (question: string, answer?: string) => string
   /**
@@ -83,9 +68,7 @@ const CHAT_STYLES: Record<ChatStyleId, ChatStyle> = {
   shakespeare: {
     label: 'Shakespeare',
     weightsFile: 'gpt-micro--shakespeare--1p55.json',
-    corpusFile: 'dataset-chat-shakespeare.txt',
-    adapterBase: 'chat--shakespeare',
-    adapterRank: 8,
+    adapterFile: 'chat--shakespeare--r8.json',
     turn: (question, answer) =>
       `\n\nFRIEND:\n${question}\n\nPOET:\n${answer ?? ''}`,
     seed: 'FRIEND:\nhello\n\nPOET:\nGood morrow to thee, friend. What news?',
@@ -98,9 +81,7 @@ const CHAT_STYLES: Record<ChatStyleId, ChatStyle> = {
   recipes: {
     label: 'Recipes',
     weightsFile: 'gpt-micro--recipes--0p63.json',
-    corpusFile: 'dataset-chat-recipes.txt',
-    adapterBase: 'chat--recipes',
-    adapterRank: 8,
+    adapterFile: 'chat--recipes--r8.json',
     turn: (question, answer) =>
       `\n\n[Question] ${question}\n\n[Answer] ${answer ?? ''}`,
     seed: '[Question] hello\n\n[Answer] Hello. Preheat the oven and tell me what you have.',
@@ -114,10 +95,6 @@ const CHAT_STYLES: Record<ChatStyleId, ChatStyle> = {
       'Ask what to cook, how to make bread, how much salt, or what to do when it burns.',
   },
 }
-
-const SHOW_TRAINER =
-  typeof window !== 'undefined' &&
-  new URLSearchParams(window.location.search).has('train-chat')
 
 // Long enough for a sentence or two and short enough that a reply that has lost
 // the thread stops before it fills the panel. The model has no idea how long an
@@ -144,7 +121,6 @@ export function Chat(props: ChatProps) {
   const [model, setModel] = React.useState<ModelT>()
   const [dataset, setDataset] = React.useState<DatasetT>()
   const [isLoading, setIsLoading] = React.useState(true)
-  const [hasAdapter, setHasAdapter] = React.useState(false)
   const [errorMessage, setErrorMessage] = React.useState<string>()
 
   const [turns, setTurns] = React.useState<Turn[]>([])
@@ -177,18 +153,12 @@ export function Chat(props: ChatProps) {
       setIsLoading(true)
       setErrorMessage(undefined)
       try {
-        // The adapter carries the alphabet it was trained with, so the chat
-        // model never has to guess at the token numbering. Without one -- the
-        // maintenance case -- it has to be read back out of the base text the
-        // checkpoint was trained on, which is a megabyte of download but only
-        // ever happens for whoever is building the adapter in the first place.
-        const adapter = RANK_OVERRIDE ? undefined : await fetchChatAdapter(style)
-        const vocabulary = adapter?.vocabulary ?? (await baseVocabularyOf(styleId))
-
-        const corpus = await (await fetch(`${BASE_PATH}/${style.corpusFile}`)).text()
+        // The shipped adapter carries the exact alphabet and rank it was
+        // trained with, so the chat model never has to infer either from a
+        // separate corpus download.
+        const adapter = await fetchChatAdapter(style, styleId)
         builtDataset = await CharDataset({
-          textSource: corpus,
-          vocabulary,
+          vocabulary: adapter.vocabulary,
           reserveMaskClass: true,
         })
 
@@ -201,16 +171,15 @@ export function Chat(props: ChatProps) {
           tuning: 'lora',
           // Match whatever the shipped adapter was trained at, so swapping the
           // file is all it takes to compare two ranks.
-          loraRank: adapter?.rank ?? TRAINING_LORA_RANK,
+          loraRank: adapter.rank,
         })
         built.build()
         built.setWeights?.(await loadWeights(style.weightsFile))
-        if (adapter) built.setLoRAWeights?.(adapter)
+        built.setLoRAWeights?.(adapter)
 
         if (cancelled) throw new Error('cancelled')
         setDataset(builtDataset)
         setModel(built)
-        setHasAdapter(Boolean(adapter))
         setTurns([])
         setPending(undefined)
       } catch (err) {
@@ -283,34 +252,6 @@ export function Chat(props: ChatProps) {
       }
       setIsWriting(false)
     }, 0)
-  }
-
-  const onTrained = (weights: LoRAWeights, vocabulary: string[]) => {
-    model?.setLoRAWeights?.(weights)
-    setHasAdapter(true)
-    setTurns([])
-    // Written out in the shape the tab expects to fetch it back in. The floats
-    // are rounded first: full float32 precision doubles the size of the file
-    // every visitor downloads and changes nothing anyone can hear.
-    saveAsFile(
-      {
-        format: 'teachable-lm-chat',
-        version: 1,
-        base: styleId,
-        modelVariant: MODEL_VARIANT,
-        blockSize: CONFIG[MODEL_VARIANT].blockSize,
-        // One more than the alphabet, matching how the model is built.
-        vocabSize: vocabulary.length + 1,
-        vocabulary,
-        rank: weights.rank,
-        alpha: weights.alpha,
-        adapters: weights.adapters.map(({ a, b }) => ({
-          a: a.map(round6),
-          b: b.map(round6),
-        })),
-      },
-      `${style.adapterBase}--r${weights.rank}`,
-    )
   }
 
   const bubble = (who: 'you' | 'bot', text: string, isRunning = false) => (
@@ -400,16 +341,7 @@ export function Chat(props: ChatProps) {
 
       {isLoading && <Skeleton rows={3} height="220px" width="100%" animation autoSizeRows />}
 
-      {!isLoading && (!hasAdapter || SHOW_TRAINER) && (
-        <ChatAdapterTrainer
-          style={style}
-          model={model}
-          vocabulary={dataset?.vocabulary}
-          onTrained={onTrained}
-        />
-      )}
-
-      {!isLoading && hasAdapter && (
+      {!isLoading && model && dataset && (
         <>
           {transcript}
           <FlexGrid flexGridColumnCount={[1, 1, 1]}>
@@ -536,215 +468,57 @@ export function Chat(props: ChatProps) {
   )
 }
 
-/**
- * Trains the chat adapters here in the browser, on the GPU, and hands back a
- * file to drop into `public/adapters/`. This is a maintenance panel rather than
- * part of the lesson: it only appears when the adapter file is missing, which
- * for anyone but whoever is building the page is never.
- */
-function ChatAdapterTrainer(props: {
-  style: ChatStyle
-  model: ModelT | undefined
-  vocabulary: string[] | undefined
-  onTrained: (weights: LoRAWeights, vocabulary: string[]) => void
-}) {
-  const { style, model, vocabulary, onTrained } = props
 
-  const [maxIters, setMaxIters] = React.useState(3000)
-  const [learningRate, setLearningRate] = React.useState(0.003)
-  const [isTraining, setIsTraining] = React.useState(false)
-  const [step, setStep] = React.useState(0)
-  const [losses, setLosses] = React.useState<{ train?: number; test?: number }>()
-  const [best, setBest] = React.useState<{ step: number; testLoss: number }>()
-  const [errorMessage, setErrorMessage] = React.useState<string>()
-  const stopRequested = React.useRef(false)
-
-  const onTrain = () => {
-    if (!model || !vocabulary) return
-    setErrorMessage(undefined)
-    setIsTraining(true)
-    setStep(0)
-    setLosses(undefined)
-    setBest(undefined)
-    stopRequested.current = false
-
-    setTimeout(async () => {
-      try {
-        const corpus = await (await fetch(`${BASE_PATH}/${style.corpusFile}`)).text()
-        const dataset = await CharDataset({
-          textSource: corpus,
-          vocabulary,
-          reserveMaskClass: true,
-        })
-        if (dataset.droppedCharacters) {
-          throw new Error(
-            `${dataset.droppedCharacters} characters of the chat text are outside the ` +
-              `model's alphabet. It could never produce them, so rewrite them first.`,
-          )
-        }
-        // Start from the frozen base every time, so a second run is not quietly
-        // continuing the first one.
-        model.resetLoRAWeights?.()
-
-        // Held-out loss is reported but deliberately not used to stop early, and
-        // it is worth being clear about why, because it is the opposite of the
-        // usual advice. The held-out tenth of this corpus is ten exchanges the
-        // model has never seen, and no amount of training will let it guess an
-        // unseen joke -- so that number bottoms out early, around step 120, and
-        // climbs from there. Stopping at the bottom of it was tried: the replies
-        // it produces are vaguer and further off the question than the ones from
-        // a run ten times as long. What this adapter is for is recall, not
-        // generalisation. It is closer to a lookup table with an accent than to
-        // a model of conversation, and the number that tracks recall is the
-        // training loss.
-        let bestTestLoss = Infinity
-        let bestStep = 0
-
-        const trainer = Trainer({
-          model,
-          dataset,
-          callbacks: {
-            onEval: ({ step, trainLoss, testLoss }) => {
-              setStep(step)
-              setLosses({ train: trainLoss, test: testLoss })
-              // A missing or NaN evaluation must never look like an improvement.
-              if (testLoss == null || !(testLoss >= 0)) return
-              if (testLoss < bestTestLoss) {
-                bestTestLoss = testLoss
-                bestStep = step
-                setBest({ step, testLoss })
-              }
-            },
-            isStopRequested: () => stopRequested.current,
-          },
-          params: {
-            learningRate,
-            evalInterval: Math.max(1, Math.round(maxIters / 60)),
-            // The held-out tenth of a 9,000-character corpus is only about ten
-            // exchanges, so a five-batch estimate of the loss on it is noisy
-            // enough to pick the wrong step to stop at. This costs time and buys
-            // a measurement worth stopping on.
-            evalIterations: 12,
-            maxIters,
-            batchSize: 8,
-            blockSize: model.params.blockSize,
-          },
-        })
-        await trainer.train()
-        dataset.dispose?.()
-        const weights = model.getLoRAWeights?.()
-        if (!weights) throw new Error('This model has no adapters to save.')
-        onTrained(weights, vocabulary)
-      } catch (err) {
-        setErrorMessage((err as Error).message)
-      }
-      setIsTraining(false)
-    }, 0)
-  }
-
-  return (
-    <Block>
-      <Notification kind="warning">
-        <b>Chat adapter workshop.</b> Training runs on this machine's GPU and takes
-        a minute or two. Watch the training loss, not the held-out one: this
-        adapter is meant to recall a hundred exchanges, not to generalise to new
-        ones. Put the file it produces in{' '}
-        <code>playground-web/public/adapters/{style.adapterBase}--r{TRAINING_LORA_RANK}.json</code> so it
-        ships with the page.
-      </Notification>
-
-      <FlexGrid flexGridColumnCount={[1, 1, 2]} flexGridColumnGap="scale600">
-        <FlexGridItem>
-          <FormControl label="Training steps" caption="Watch the training loss and stop when it flattens.">
-            <Input
-              type="number"
-              value={maxIters}
-              onChange={(e) => setMaxIters(parseInt(e.target.value) || 0)}
-              min={1}
-              step={100}
-              disabled={isTraining}
-            />
-          </FormControl>
-        </FlexGridItem>
-        <FlexGridItem>
-          <FormControl label="Learning rate" caption="How big a step each update takes.">
-            <Input
-              type="number"
-              value={learningRate}
-              onChange={(e) => setLearningRate(parseFloat(e.target.value))}
-              min={0.0001}
-              step={0.001}
-              disabled={isTraining}
-            />
-          </FormControl>
-        </FlexGridItem>
-      </FlexGrid>
-
-      {isTraining && (
-        <Block marginBottom="scale600">
-          <ProgressBar
-            value={Math.round((step / Math.max(1, maxIters)) * 100)}
-            size={SIZE.small}
-            getProgressLabel={() =>
-              `step ${step} of ${maxIters}` +
-              (losses ? ` · train ${losses.train} · held out ${losses.test}` : '') +
-              (best ? ` · best ${best.testLoss} at step ${best.step}` : '')
-            }
-            showLabel
-            overrides={{ BarContainer: { style: { marginLeft: 0, marginRight: 0 } } }}
-          />
-        </Block>
-      )}
-
-      <Block display="flex" gridGap="scale300">
-        <Button
-          onClick={onTrain}
-          disabled={!model || !vocabulary || isTraining}
-          isLoading={isTraining}
-          startEnhancer={() => <RiDownloadLine />}
-        >
-          Train the chat adapter
-        </Button>
-        {isTraining && (
-          <Button
-            kind={KIND.secondary}
-            onClick={() => {
-              stopRequested.current = true
-            }}
-          >
-            Stop and save
-          </Button>
-        )}
-      </Block>
-
-      {errorMessage && (
-        <Block marginTop="scale600">
-          <Notification kind="negative">{errorMessage}</Notification>
-        </Block>
-      )}
-    </Block>
-  )
+type ChatAdapterFile = LoRAWeights & {
+  format: 'teachable-lm-chat'
+  version: 1
+  base: ChatStyleId
+  modelVariant: typeof MODEL_VARIANT
+  blockSize: number
+  vocabSize: number
+  vocabulary: string[]
 }
 
-type ChatAdapterFile = LoRAWeights & { vocabulary?: string[] }
-
-/** Resolves to undefined when no adapter has been built yet, which is not an error. */
-async function fetchChatAdapter(style: ChatStyle): Promise<ChatAdapterFile | undefined> {
+async function fetchChatAdapter(
+  style: ChatStyle,
+  styleId: ChatStyleId,
+): Promise<ChatAdapterFile> {
+  const adapterURL = `${BASE_PATH}/adapters/${style.adapterFile}`
   let response: Response
   try {
-    response = await fetch(`${BASE_PATH}/adapters/${style.adapterBase}--r${style.adapterRank}.json`)
+    response = await fetch(adapterURL)
   } catch (err) {
-    return undefined
+    throw new Error('Could not load the chat style. Check your connection and try again.')
   }
-  if (!response.ok) return undefined
+  if (!response.ok) throw new Error(`Could not load the chat style (${response.status}).`)
   try {
     const parsed = (await response.json()) as ChatAdapterFile
-    if (!Number.isInteger(parsed.rank) || parsed.rank < 1) return undefined
-    if (!Array.isArray(parsed.adapters)) return undefined
+    const validMetadata =
+      parsed.format === 'teachable-lm-chat' &&
+      parsed.version === 1 &&
+      parsed.base === styleId &&
+      parsed.modelVariant === MODEL_VARIANT &&
+      parsed.blockSize === CONFIG[MODEL_VARIANT].blockSize &&
+      parsed.vocabSize === parsed.vocabulary?.length + 1 &&
+      Number.isInteger(parsed.rank) &&
+      parsed.rank > 0 &&
+      Number.isFinite(parsed.alpha)
+    const validWeights =
+      Array.isArray(parsed.vocabulary) &&
+      parsed.vocabulary.every((character) => typeof character === 'string') &&
+      Array.isArray(parsed.adapters) &&
+      parsed.adapters.length > 0 &&
+      parsed.adapters.every(
+        ({ a, b }) =>
+          Array.isArray(a) &&
+          Array.isArray(b) &&
+          a.every(Number.isFinite) &&
+          b.every(Number.isFinite),
+      )
+    if (!validMetadata || !validWeights) throw new Error('invalid adapter')
     return parsed
   } catch (err) {
-    // A dev server that answers every path with index.html rather than a 404.
-    return undefined
+    throw new Error('The chat style file is invalid or does not match this model.')
   }
 }
 
@@ -783,26 +557,10 @@ function buildPrompt(
   return `${style.seed}${history}${tail}`.slice(-blockSize)
 }
 
-/**
- * The alphabet of the text a checkpoint was pretrained on, one character shorter
- * than its class count -- see `reserveMaskClass`.
- */
-async function baseVocabularyOf(styleId: ChatStyleId): Promise<string[]> {
-  const textSourceURL = `${BASE_PATH}/${BASE_DATASETS[styleId].file}`
-  const dataset = await CharDataset({ textSourceURL, reserveMaskClass: true })
-  const vocabulary = dataset.vocabulary
-  dataset.dispose?.()
-  return vocabulary
-}
-
 /** Keeps a half-typed or emptied number field from reaching the generator. */
 function clamp(value: number, min: number, max: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback
   return Math.min(max, Math.max(min, value))
-}
-
-function round6(value: number): number {
-  return Number(value.toFixed(6))
 }
 
 /** Everything up to the newline that ends a reply. */

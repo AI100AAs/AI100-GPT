@@ -17,6 +17,10 @@ can see how a model's learned text patterns shape each next choice.
   small adapter on-device.
 - **Compare:** generate the same prompt before and after teaching, then
   continue both outputs with one button.
+- **Chat:** see how a very small model behaves after being shown the shape of
+  short question-and-answer exchanges, without presenting it as a factual assistant.
+- **How big is this?:** compare the classroom model's scale with familiar
+  language models.
 - **Save and load:** download a trained style as JSON and load it again later.
 - **Input context:** provide up to 128 characters as the starting context; the
   default generated sequence length is 200 characters.

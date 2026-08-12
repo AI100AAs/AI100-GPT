@@ -17,6 +17,13 @@ export async function loadWeights(fileName: string): Promise<Weights> {
   const cached = weightsCache.get(fileName)
   if (cached) return cached
 
+  // The page only uses one base style at a time. Keep concurrent callers for
+  // that style joined, but release parsed checkpoints from styles that are no
+  // longer selected.
+  for (const cachedFileName of weightsCache.keys()) {
+    if (cachedFileName !== fileName) weightsCache.delete(cachedFileName)
+  }
+
   const request = (async () => {
     const response = await fetch(`${MODEL_WEIGHTS_BASE_URL}${fileName}`)
     if (!response.ok) {

@@ -249,8 +249,10 @@ export function GPT(params: ModelParams): Model {
     resetLoRAWeights: () => {
       for (const block of transformer.h) {
         for (const adapter of block.getLoRA?.() ?? []) {
-          adapter.a.assign(tf.randomNormal(adapter.a.shape, 0, 0.02))
-          adapter.b.assign(tf.zeros(adapter.b.shape))
+          tf.tidy(() => {
+            adapter.a.assign(tf.randomNormal(adapter.a.shape, 0, 0.02))
+            adapter.b.assign(tf.zeros(adapter.b.shape))
+          })
         }
       }
     },
@@ -319,7 +321,7 @@ export type LoRA = {
 }
 
 function createLoRA(inDim: number, outDim: number, rank: number, alpha: number): LoRA {
-  return {
+  return tf.tidy(() => ({
     // Deliberately unnamed: tf.js registers variable names globally, so fixed
     // names would make a second model in the same page fail to build.
     a: tf.variable(tf.randomNormal([inDim, rank], 0, 0.02), true),
@@ -328,7 +330,7 @@ function createLoRA(inDim: number, outDim: number, rank: number, alpha: number):
     outDim,
     params: inDim * rank + rank * outDim,
     enabled: true,
-  }
+  }))
 }
 
 function applyLoRA(lora: LoRA | null, x: tf.Tensor, base: tf.Tensor): tf.Tensor {

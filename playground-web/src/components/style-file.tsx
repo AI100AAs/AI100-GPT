@@ -1,6 +1,8 @@
+import React from 'react'
 import { Block } from 'baseui/block'
 import { FormControl } from 'baseui/form-control'
-import { FileUploader } from 'baseui/file-uploader'
+import { Button, KIND } from 'baseui/button'
+import { RiUpload2Line } from 'react-icons/ri'
 
 type StyleFileProps = {
   onUpload: (file: File) => void
@@ -14,18 +16,34 @@ type StyleFileProps = {
  */
 export function StyleFile(props: StyleFileProps) {
   const { onUpload, baseLabel, disabled = false } = props
+  const inputRef = React.useRef<HTMLInputElement>(null)
+
   return (
     <Block>
       <FormControl
         label="Load a style"
         caption={`Open a style file saved from this page. It has to be one trained on the ${baseLabel} model.`}
       >
-        <FileUploader
-          accept="application/json"
-          multiple={false}
+        <Button
+          kind={KIND.secondary}
           disabled={disabled}
-          onDrop={(accepted) => {
-            if (accepted.length) onUpload(accepted[0])
+          onClick={() => inputRef.current?.click()}
+          startEnhancer={() => <RiUpload2Line />}
+          overrides={{ Root: { style: { width: '100%' } } }}
+        >
+          Choose a style file
+        </Button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="application/json,.json"
+          disabled={disabled}
+          style={{ display: 'none' }}
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            if (file) onUpload(file)
+            // Let selecting the same file twice trigger another change event.
+            event.target.value = ''
           }}
         />
       </FormControl>

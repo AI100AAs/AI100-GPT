@@ -5,7 +5,6 @@ import { FinetuneCorpus } from './finetune'
 import { CompareGenerators } from './compare'
 import { Chat } from './chat'
 import { Scale } from './scale'
-import { FutureWork } from './future-work'
 import { StyleFile } from './style-file'
 import { Tabs, Tab, FILL } from 'baseui/tabs-motion'
 import { FlexGrid, FlexGridItem } from 'baseui/flex-grid'
@@ -18,16 +17,11 @@ import { Trainer } from './trainer'
 import { WINDOW_PADDING_HORIZONTAL } from '../config/theme'
 import { Block } from 'baseui/block'
 import { Generator } from './generator'
-import { Debugger } from './debugger'
 import { saveAsFile } from '../utils/file'
 import { Button, KIND } from 'baseui/button'
 import { RiDownloadLine } from 'react-icons/ri'
 import { FormControl } from 'baseui/form-control'
 import { Notification } from './shared/notification'
-
-// Notes for whoever maintains this next, not for the students using it. The tab
-// is kept wired up so it can be turned back on while working on the playground.
-const SHOW_IDEAS = false
 
 export function Playground() {
   // The technical view (backend picker, dataset measurements, training controls,
@@ -61,10 +55,6 @@ export function Playground() {
     kind: 'positive' | 'negative'
     text: string
   }>()
-  // Undefined means "same as training" -- generation then runs in place with no
-  // backend switch and no model rebuild.
-  const [inferenceBackend, setInferenceBackend] = React.useState<BackendId>()
-
   const [dataset, setDataset] = React.useState<DatasetT>()
   const [datasetId, setDatasetId] = React.useState<BaseDatasetId>('shakespeare')
   const baseDatasetId = datasetId
@@ -289,7 +279,6 @@ export function Playground() {
                 dataset={dataset}
                 modelVariant={modelVariant}
                 datasetId={datasetId}
-                inferenceBackend={inferenceBackend}
                 useAdapters={false}
                 showTechnicalDetails={showTechnicalDetails}
               />
@@ -405,14 +394,6 @@ export function Playground() {
               <Scale />
             </Step>
           </Tab>
-
-          {SHOW_IDEAS && (
-            <Tab key="ideas" title="Ideas" overrides={TAB_OVERRIDES}>
-              <Step title="Ideas for future versions">
-                <FutureWork />
-              </Step>
-            </Tab>
-          )}
 
         </Tabs>
 

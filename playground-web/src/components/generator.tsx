@@ -1,6 +1,6 @@
 import React from 'react'
 import * as tf from '@tensorflow/tfjs'
-import { Dataset, GPT, Model as ModelT, ModelVariant } from '@gpt/model'
+import { Dataset, Model as ModelT, ModelVariant } from '@gpt/model'
 import { Block } from 'baseui/block'
 import { useStyletron } from 'baseui'
 import { FadeIn } from './shared/fade'
@@ -14,7 +14,7 @@ import { Textarea, SIZE } from 'baseui/textarea'
 import { msToS } from '../utils/string'
 import { Card } from 'baseui/card'
 import { Accordion, Panel } from 'baseui/accordion'
-import { BackendId, DatasetId, ModelWeightsIndex } from '../types/playground'
+import { DatasetId, ModelWeightsIndex } from '../types/playground'
 import { MODEL_WEIGHTS_BASE_URL } from '../config/links'
 import { Notification } from './shared/notification'
 import { useSnackbar } from 'baseui/snackbar'
@@ -27,7 +27,6 @@ type GeneratorProps = {
   model: ModelT | undefined
   modelVariant: ModelVariant | undefined
   datasetId: DatasetId | undefined
-  inferenceBackend?: BackendId
   // When false the low-rank adapters are switched off, so this generator always
   // shows the untouched pretrained model even after the learner has trained.
   useAdapters?: boolean
@@ -36,62 +35,12 @@ type GeneratorProps = {
   showTechnicalDetails?: boolean
 }
 
-/**
- * Runs `fn` with the given backend active.
- *
- * TF.js has a single global backend and a tensor belongs to whichever backend
- * created it, so the trained model cannot simply be used after switching. The
- * weights do round-trip safely though -- `getWeights` returns plain JS arrays --
- * so a throwaway model is rebuilt on the target backend, used, and disposed.
- * Switching away does not destroy the training backend's tensors, so the real
- * model is still intact once the original backend is restored.
- */
-async function withBackend<T>(
-  target: BackendId | undefined,
-  model: ModelT,
-  fn: (model: ModelT) => Promise<T>,
-): Promise<T> {
-  const current = tf.getBackend()
-  if (!target || target === current || !model.getWeights || !model.setWeights) {
-    return fn(model)
-  }
-
-  const weights = await model.getWeights()
-
-  let activated = false
-  try {
-    activated = await tf.setBackend(target)
-    await tf.ready()
-  } catch (err) {
-    console.warn(`[tfjs] could not activate ${target} for inference, using ${current}`, err)
-  }
-  if (!activated) {
-    // Make sure a failed switch cannot leave us on the wrong backend.
-    await tf.setBackend(current)
-    await tf.ready()
-    return fn(model)
-  }
-
-  let scratch: ModelT | undefined
-  try {
-    scratch = GPT(model.params)
-    scratch.build()
-    scratch.setWeights!(weights)
-    return await fn(scratch)
-  } finally {
-    scratch?.dispose?.()
-    await tf.setBackend(current)
-    await tf.ready()
-  }
-}
-
 export function Generator(props: GeneratorProps) {
   const {
     model,
     modelVariant,
     dataset,
     datasetId,
-    inferenceBackend,
     useAdapters = true,
     title,
     showTechnicalDetails = false,
@@ -114,7 +63,6 @@ export function Generator(props: GeneratorProps) {
 
   const [maxNewTokensErr, setMaxNewTokensErr] = React.useState<string>()
   const [temperatureErr, setTemperatureErr] = React.useState<string>()
-  const [doSampleErr, setDoSampleErr] = React.useState<string>()
   const [topKErr, setTopKErr] = React.useState<string>()
 
   const [generateStartTime, setGenerateStartTime] = React.useState<number>()
@@ -139,7 +87,7 @@ export function Generator(props: GeneratorProps) {
 
   const inputContextErr = getInputContextError(inputContext, dataset, model)
   const formError =
-    inputContextErr || maxNewTokensErr || temperatureErr || doSampleErr || topKErr
+    inputContextErr || maxNewTokensErr || temperatureErr || topKErr
 
   const loadPretrainedWeightsIndex = async () => {
     try {
@@ -199,14 +147,12 @@ export function Generator(props: GeneratorProps) {
           // Both steps share one model object; the adapters are switched on or
           // off per generator so "before" stays before.
           model.setLoRAEnabled?.(useAdapters)
-          await withBackend(inferenceBackend, model, async (activeModel) => {
-            // `idx` has to be created after the backend switch so it belongs to
-            // the same backend as the model that consumes it.
-            const encodedContext = dataset.encode(modelContext)
-            const idx = encodedContext.length
-              ? tf.tensor2d([encodedContext], [1, encodedContext.length], 'int32')
-              : tf.ones([1, 1], 'int32')
-            const generated = await activeModel.generate(
+          const encodedContext = dataset.encode(modelContext)
+          const idx = encodedContext.length
+            ? tf.tensor2d([encodedContext], [1, encodedContext.length], 'int32')
+            : tf.ones([1, 1], 'int32')
+          try {
+            const generated = await model.generate(
               {
                 idx,
                 maxNewTokens,
@@ -214,7 +160,7 @@ export function Generator(props: GeneratorProps) {
                 doSample,
                 topK,
               },
-              async (nextToken) => {
+              (nextToken) => {
                 const nextChar = dataset.decode([nextToken])
                 if (!nextChar) return
                 generatedTextRef.current += nextChar
@@ -223,8 +169,9 @@ export function Generator(props: GeneratorProps) {
               },
             )
             generated.dispose()
+          } finally {
             idx.dispose()
-          })
+          }
         } catch (err) {
           setErrorMessage((err as Error).message)
         }
@@ -533,7 +480,6 @@ export function Generator(props: GeneratorProps) {
                     label="Sampling"
                     caption="Controls the trade-off between creativity (when random sampling is enabled) and predictability (when choosing the most probable token) in text generation."
                     disabled={isFormDisabled}
-                    error={doSampleErr}
                   >
                     <Checkbox
                       checked={doSample}

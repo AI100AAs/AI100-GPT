@@ -25,11 +25,6 @@ type StepProps = {
   showTechnicalDetails?: boolean
 }
 
-// Both bundled corpora are read-only, so a dataset built once can be handed out
-// again. Switching back and forth otherwise re-downloaded a megabyte of text and
-// re-encoded every character of it.
-const datasetCache = new Map<BaseDatasetId, DatasetT>()
-
 export function Dataset(props: StepProps) {
   const {
     onChange = () => {},
@@ -50,15 +45,11 @@ export function Dataset(props: StepProps) {
     setIsLoading(true)
     setErrorMessage(undefined)
     try {
-      let nextDataset = datasetCache.get(nextDatasetId)
-      if (!nextDataset) {
-        const textSourceURL = `${BASE_PATH}/${BASE_DATASETS[nextDatasetId].file}`
-        // The pretrained checkpoints use a token index shift of zero, so one of
-        // their output classes belongs to the padding token and the alphabet is
-        // one character shorter than the class count.
-        nextDataset = await CharDataset({ textSourceURL, reserveMaskClass: true })
-        datasetCache.set(nextDatasetId, nextDataset)
-      }
+      const textSourceURL = `${BASE_PATH}/${BASE_DATASETS[nextDatasetId].file}`
+      // The pretrained checkpoints use a token index shift of zero, so one of
+      // their output classes belongs to the padding token and the alphabet is
+      // one character shorter than the class count.
+      const nextDataset = await CharDataset({ textSourceURL, reserveMaskClass: true })
       await onChange(nextDataset, nextDatasetId)
       setDatasetId(nextDatasetId)
     } catch (err) {
