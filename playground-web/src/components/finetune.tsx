@@ -215,6 +215,25 @@ export function FinetuneCorpus(props: FinetuneCorpusProps) {
         </Button>
       </Block>
 
+      {/*
+        Encyclopedia text is the first thing people reach for and the worst
+        thing to give this model, so the note names it instead of asking for
+        "simple text" and leaving the learner to guess what that means. The
+        reason is worth stating too: an article is a few hundred characters of
+        proper nouns and numbers the model has never seen, each appearing once,
+        and one appearance cannot teach a spelling.
+      */}
+      <Block marginBottom="scale600">
+        <Notification kind="info">
+          <b>Short, plain text works best.</b> A page from Wikipedia or a news
+          article may come back as gibberish — it is full of names, dates and
+          technical words that appear once each, and these models need to see a
+          word many times before it can spell it. Sentences that share a pattern
+          and reuse the same everyday words teach it far more. “Use an example”
+          above loads one.
+        </Notification>
+      </Block>
+
       <Notification kind="warning">
         <b>This model only knows {baseVocabulary?.length ?? '…'} characters</b> — the ones
         below, and nothing else. Emoji, accented letters and any other symbol are dropped

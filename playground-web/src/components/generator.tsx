@@ -14,7 +14,7 @@ import { Textarea, SIZE } from 'baseui/textarea'
 import { msToS } from '../utils/string'
 import { Card } from 'baseui/card'
 import { Accordion, Panel } from 'baseui/accordion'
-import { DatasetId, ModelWeightsIndex } from '../types/playground'
+import { DatasetId, EXAMPLE_PROMPT, ModelWeightsIndex } from '../types/playground'
 import { MODEL_WEIGHTS_BASE_URL } from '../config/links'
 import { Notification } from './shared/notification'
 import { useSnackbar } from 'baseui/snackbar'
@@ -408,7 +408,7 @@ export function Generator(props: GeneratorProps) {
             <Textarea
               value={inputContext}
               onChange={(event) => onInputContextChange(event.target.value)}
-              placeholder="Example: I beseech you to..."
+              placeholder={`Example: ${EXAMPLE_PROMPT}`}
               rows={5}
               disabled={isFormDisabled}
             />

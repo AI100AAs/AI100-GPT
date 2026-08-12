@@ -24,28 +24,35 @@ export function StyleFile(props: StyleFileProps) {
         label="Load a style"
         caption={`Open a style file saved from this page. It has to be one trained on the ${baseLabel} model.`}
       >
-        <Button
-          kind={KIND.secondary}
-          disabled={disabled}
-          onClick={() => inputRef.current?.click()}
-          startEnhancer={() => <RiUpload2Line />}
-          overrides={{ Root: { style: { width: '100%' } } }}
-        >
-          Choose a style file
-        </Button>
-        <input
-          ref={inputRef}
-          type="file"
-          accept="application/json,.json"
-          disabled={disabled}
-          style={{ display: 'none' }}
-          onChange={(event) => {
-            const file = event.target.files?.[0]
-            if (file) onUpload(file)
-            // Let selecting the same file twice trigger another change event.
-            event.target.value = ''
-          }}
-        />
+        {/*
+          One element, not two: FormControl passes its child through
+          React.Children.only, so the button and the hidden file input have to
+          be wrapped or the whole page fails to render.
+        */}
+        <Block>
+          <Button
+            kind={KIND.secondary}
+            disabled={disabled}
+            onClick={() => inputRef.current?.click()}
+            startEnhancer={() => <RiUpload2Line />}
+            overrides={{ Root: { style: { width: '100%' } } }}
+          >
+            Choose a style file
+          </Button>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="application/json,.json"
+            disabled={disabled}
+            style={{ display: 'none' }}
+            onChange={(event) => {
+              const file = event.target.files?.[0]
+              if (file) onUpload(file)
+              // Let selecting the same file twice trigger another change event.
+              event.target.value = ''
+            }}
+          />
+        </Block>
       </FormControl>
     </Block>
   )

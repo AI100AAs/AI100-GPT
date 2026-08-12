@@ -90,7 +90,7 @@ const CHAT_STYLES: Record<ChatStyleId, ChatStyle> = {
     // the alphabet the model can actually read.
     placeholder: 'Ask the cook something (no question marks — it has never seen one)',
     blurb:
-      'The recipe model, taught to answer instead of listing ingredients.',
+      'This is a tiny character-by-character model trained on recipe text, not a reliable question-answering system. It may imitate the shape of an answer, but it often loses the thread or produces nonsense.',
     suggestions:
       'Ask what to cook, how to make bread, how much salt, or what to do when it burns.',
   },
@@ -333,10 +333,9 @@ export function Chat(props: ChatProps) {
         color="contentSecondary"
         $style={{ fontSize: '14px', lineHeight: '21px' }}
       >
-        {style.blurb} It still predicts one character at a time; it has simply
-        seen enough questions and answers to know that a question is followed by
-        an answer. Ask it anything — and notice that sounding right and being
-        right are not the same thing.
+        {style.blurb} It predicts one character at a time, so it has very little
+        ability to understand a question or check an answer. Try a prompt and
+        notice how quickly sounding plausible can turn into nonsense.
       </Block>
 
       {isLoading && <Skeleton rows={3} height="220px" width="100%" animation autoSizeRows />}

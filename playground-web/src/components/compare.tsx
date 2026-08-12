@@ -11,7 +11,7 @@ import { Checkbox, LABEL_PLACEMENT } from 'baseui/checkbox'
 import { FlexGrid, FlexGridItem } from 'baseui/flex-grid'
 import { ImLoop } from 'react-icons/im'
 import { Notification } from './shared/notification'
-import { BASE_DATASETS, BaseDatasetId } from '../types/playground'
+import { BASE_DATASETS, BaseDatasetId, EXAMPLE_PROMPT } from '../types/playground'
 import { DEFAULT_TEMPERATURE, DEFAULT_TOP_K } from '../config/sampling'
 
 type CompareProps = {
@@ -219,7 +219,7 @@ export function CompareGenerators(props: CompareProps) {
             <Textarea
               value={inputContext}
               onChange={(e) => onInputContextChange(e.target.value)}
-              placeholder="Example: I beseech you to..."
+              placeholder={`Example: ${EXAMPLE_PROMPT}`}
               rows={3}
               size={SIZE.compact}
               disabled={Boolean(running)}

@@ -17,7 +17,6 @@ import { Point, ResponsiveLine } from '@nivo/line'
 import { Clock } from './shared/clock'
 import { formatTime } from '../utils/string'
 import { Card } from 'baseui/card'
-import { Modal, ModalHeader, ModalBody, ModalFooter, ModalButton, ROLE } from 'baseui/modal'
 
 type TrainerProps = {
   dataset: Dataset | undefined
@@ -28,9 +27,6 @@ type TrainerProps = {
   backend?: string
   onTrainingComplete?: () => void
   onTrainingStateChange?: (isTraining: boolean) => void
-  // True when the adapters already carry a trained style. Training again builds
-  // on top of it unless the learner chooses to start over.
-  hasExistingStyle?: boolean
 }
 
 type LossPoint = { step: number; loss: number }
@@ -111,7 +107,6 @@ export function Trainer(props: TrainerProps) {
     backend,
     onTrainingComplete,
     onTrainingStateChange = () => {},
-    hasExistingStyle = false,
   } = props
 
   // Measured: doubling the batch costs ~1.8x the time per step, so a step is
@@ -137,7 +132,6 @@ export function Trainer(props: TrainerProps) {
 
   const [isLoading, setIsLoading] = React.useState<boolean>()
   const [errorMessage, setErrorMessage] = React.useState<string>()
-  const [showContinuePrompt, setShowContinuePrompt] = React.useState<boolean>(false)
 
   const [epoch, setEpoch] = React.useState<number>(0)
 
@@ -168,20 +162,19 @@ export function Trainer(props: TrainerProps) {
   const effectiveEvalIterations = simplified ? 3 : evalIterations
   const effectiveBatchSize = simplified ? 8 : batchSize
 
-  // Training continues from whatever the adapters already hold, so when a style
-  // exists the learner is asked whether to build on it or begin again. Without
-  // the choice, a second run quietly mixes two different pieces of writing.
+  // Every run starts from the pretrained model, never from the last style the
+  // learner taught it.
+  //
+  // The adapters persist in the model object across tab switches, so without
+  // this a second piece of writing would silently train on top of the first and
+  // the "before and after" comparison would be measuring two corpora at once --
+  // with no way to tell from the screen that it was. Asking the learner to
+  // choose was worse: it puts a question about optimizer state in front of
+  // someone who is here to find out what fine-tuning is.
   const onRequestTraining = () => {
-    if (hasExistingStyle) {
-      setShowContinuePrompt(true)
-      return
-    }
-    onStartTraining(true)
-  }
-
-  const onStartTraining = (startFresh: boolean) => {
-    setShowContinuePrompt(false)
-    if (startFresh) model?.resetLoRAWeights?.()
+    // Zeroes the `b` matrices, which makes the adapters an exact no-op again, so
+    // the model generates precisely as the downloaded checkpoint does.
+    model?.resetLoRAWeights?.()
     isStopRequestedRef.current = false
     setIsStopRequested(false)
     setDidStop(false)
@@ -778,36 +771,8 @@ export function Trainer(props: TrainerProps) {
     }
   }, [])
 
-  const continuePrompt = (
-    <Modal
-      isOpen={showContinuePrompt}
-      onClose={() => setShowContinuePrompt(false)}
-      closeable
-      animate
-      autoFocus
-      role={ROLE.dialog}
-    >
-      <ModalHeader>This model already learned a style</ModalHeader>
-      <ModalBody>
-        You can keep going from where it is, so it learns your new text on top of what
-        it already picked up — or clear that and teach it your text from the model&apos;s
-        original voice.
-      </ModalBody>
-      <ModalFooter>
-        <ModalButton kind={KIND.tertiary} onClick={() => setShowContinuePrompt(false)}>
-          Cancel
-        </ModalButton>
-        <ModalButton kind={KIND.secondary} onClick={() => onStartTraining(false)}>
-          Keep going
-        </ModalButton>
-        <ModalButton onClick={() => onStartTraining(true)}>Start over</ModalButton>
-      </ModalFooter>
-    </Modal>
-  )
-
   return (
     <Block>
-      {continuePrompt}
       {loader}
       {simplified ? simplifiedTraining : trainingParams}
       {backendNote}

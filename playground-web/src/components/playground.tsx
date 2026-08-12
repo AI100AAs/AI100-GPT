@@ -45,10 +45,6 @@ export function Playground() {
   const [corpus, setCorpus] = React.useState<DatasetT>()
   const [activeTab, setActiveTab] = React.useState<string>('explore')
   const [hasTrainedStyle, setHasTrainedStyle] = React.useState(false)
-  // Whether the adapters themselves hold a trained style. Distinct from
-  // `hasTrainedStyle`, which the UI clears as soon as the text is edited: the
-  // weights survive that, so training again would quietly build on them.
-  const [hasStyleInModel, setHasStyleInModel] = React.useState(false)
   const [isTrainingStyle, setIsTrainingStyle] = React.useState(false)
   const [styleDraftRevision, setStyleDraftRevision] = React.useState(0)
   const [styleMessage, setStyleMessage] = React.useState<{
@@ -92,8 +88,6 @@ export function Playground() {
     // attached while the new checkpoint is loading.
     onCorpusChange(undefined)
     setHasTrainedStyle(false)
-    // A new base means a new model object, so its adapters start empty again.
-    setHasStyleInModel(false)
     setStyleMessage(undefined)
 
     dataset?.dispose?.()
@@ -169,7 +163,6 @@ export function Playground() {
         model.setLoRAWeights(parsed)
         model.setLoRAEnabled?.(true)
         setHasTrainedStyle(true)
-        setHasStyleInModel(true)
         setStyleMessage({ kind: 'positive', text: 'Style loaded. Open Compare to try it.' })
       } catch (err) {
         setStyleMessage({ kind: 'negative', text: (err as Error).message })
@@ -315,9 +308,7 @@ export function Playground() {
                   }}
                   onTrainingComplete={() => {
                     setHasTrainedStyle(true)
-                    setHasStyleInModel(true)
                   }}
-                  hasExistingStyle={hasStyleInModel}
                 />
               </Block>
 

@@ -23,6 +23,16 @@ export const BASE_DATASETS: Record<
   },
 }
 
+/**
+ * The prompt suggested in every generation field, on every style.
+ *
+ * Deliberately the opening of the worked fine-tuning example: prompting with
+ * the phrase the model was just taught is what makes the before-and-after
+ * comparison legible, the same few characters producing the base model's voice
+ * on one side and the learner's sentence on the other.
+ */
+export const EXAMPLE_PROMPT = 'I am a '
+
 export type ModelWeightsIndex = {
   weights: {
     fileName: string
