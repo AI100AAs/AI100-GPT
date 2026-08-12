@@ -1,14 +1,17 @@
 # AI100-GPT playground
 
-This repository contains the standalone AI100-GPT teaching playground: a very
-small GPT model that runs in the browser and makes next-character prediction,
-style, and fine-tuning visible through short experiments.
+This repository contains the standalone AI100-GPT teaching playground, developed
+for [UBC's AI 100: Introduction to Artificial Intelligence course](https://www.cs.ubc.ca/~kevinlb/teaching/ai100/).
+It is a very small GPT model that runs in the browser and makes next-character
+prediction, style, and fine-tuning visible through short experiments.
 
 **Try it online:** [AI100-GPT playground](https://ai100-gpt-playground.ai100aas.chatgpt.site)
 
 The playground is designed for learning, not for answering questions like a
 chatbot. It continues a starting phrase one character at a time, so students
-can see how a model's learned text patterns shape each next choice.
+can see how a model's learned text patterns shape each next choice. The model is
+deliberately tiny: plausible-looking text can become repetition or nonsense,
+and generated text should never be treated as verified information.
 
 ## What is included
 
@@ -18,9 +21,10 @@ can see how a model's learned text patterns shape each next choice.
 - **Compare:** generate the same prompt before and after teaching, then
   continue both outputs with one button.
 - **Chat:** see how a very small model behaves after being shown the shape of
-  short question-and-answer exchanges, without presenting it as a factual assistant.
+  short question-and-answer exchanges. It often loses the thread, especially
+  with recipe questions, and is not a factual assistant.
 - **How big is this?:** compare the classroom model's scale with familiar
-  language models.
+  language models using a table and proportional-area bubble comparison.
 - **Save and load:** download a trained style as JSON and load it again later.
 - **Input context:** provide up to 128 characters as the starting context; the
   default generated sequence length is 200 characters.
@@ -28,7 +32,10 @@ can see how a model's learned text patterns shape each next choice.
 
 The public interface currently exposes the **GPT Micro** checkpoint. Other
 small GPT configurations and checkpoints remain in the source for experiments,
-but are intentionally hidden from the student flow for now.
+but are intentionally hidden from the student flow for now. The comparison
+page also includes SmolLM2, GPT-2/GPT-3, selected Cohere models, and Qwen3.6
+35B-A3B and Qwen3.5 397B-A17B as scale references; it is a size comparison,
+not a quality ranking.
 
 ## Privacy and hardware
 
@@ -102,6 +109,11 @@ and has been adapted for the AI100 classroom activity.
 ## License and acknowledgements
 
 The GPT implementation follows the upstream project's educational code and
-references Andrej Karpathy's lecture, [Let's build GPT: from scratch, in code,
-spelled out](https://www.youtube.com/watch?v=kCc8FmEb1nY). The bundled
-Shakespeare text is public domain.
+references Andrej Karpathy's [minGPT](https://github.com/karpathy/minGPT) and
+lecture, [Let's build GPT: from scratch, in code, spelled out](https://www.youtube.com/watch?v=kCc8FmEb1nY).
+The bundled Shakespeare text is public domain.
+
+This project is developed for UBC's AI 100 course. It is an educational
+demonstration, not a production language model or a source of advice. The
+project team is not responsible for generated content or how it is interpreted
+or used.
