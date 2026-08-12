@@ -34,6 +34,16 @@ export function Backend(props: BackendProps) {
       // For WASM backend, set the path to the public folder where `.wasm` files are located
       setWasmPaths(BASE_PATH + '/')
 
+      // How many GPU commands tfjs queues up before submitting them. This model
+      // is small enough that no single operation keeps the GPU busy for long, so
+      // the cost of generating a character is dominated by how many times the
+      // command queue is handed to the driver -- roughly 500 operations go into
+      // one character, which at the default of 15 means about thirty submissions
+      // for a few microseconds of arithmetic each. Batching them more coarsely
+      // spends less time talking to the driver. It only delays results, never
+      // changes them.
+      tf.env().set('WEBGPU_DEFERRED_SUBMIT_BATCH_SIZE', 64)
+
       // Walk the preference order until one backend actually activates.
       //
       // WASM is deliberately absent: it cannot train this model at all. The
@@ -271,4 +281,3 @@ function isWebGPUSupported() {
 function isWASMSupported() {
   return typeof WebAssembly === 'object' && typeof WebAssembly.instantiate === 'function'
 }
-

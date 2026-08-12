@@ -32,6 +32,29 @@ export function yieldToBrowser(): Promise<void> {
   })
 }
 
+/**
+ * A yield that only actually gives up the thread once every `budgetMs`.
+ *
+ * Awaiting a frame after every generated character caps generation at the
+ * display refresh rate -- roughly 60 characters a second no matter how fast the
+ * model runs -- and a frame that arrives with one new character on it looks
+ * exactly like a frame that arrives with four. Waiting on a budget instead lets
+ * the loop run at whatever speed the model can manage while still repainting
+ * often enough to look like live typing.
+ *
+ * Returns whether it actually yielded, so callers can do their own
+ * once-per-frame work (a readback, a state update) on the same boundary.
+ */
+export function createFrameBudget(budgetMs: number = 12): () => Promise<boolean> {
+  let lastYield = performance.now()
+  return async () => {
+    if (performance.now() - lastYield < budgetMs) return false
+    await yieldToBrowser()
+    lastYield = performance.now()
+    return true
+  }
+}
+
 export function withModelHelpers(model: Model, children: LayerChildren): Model {
   return {
     ...model,

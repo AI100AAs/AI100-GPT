@@ -14,24 +14,68 @@ const MIN_CHARACTERS = 200
 /** Past this the wait gets long without teaching the model anything more. */
 const MAX_CHARACTERS = 5000
 
-const EXAMPLE_TEXT = [
-  'I am a blackboard',
-  'I am a whiteboard',
-  'I am a tree',
-  'I am a human',
-  'I am a dog',
-  'I am a cat',
-  'I am an apple',
-  'I am a peach',
-  "I'm a blackboard",
-  "I'm a whiteboard",
-  "I'm a tree",
-  "I'm a human",
-  "I'm a dog",
-  "I'm a cat",
-  "I'm an apple",
-  "I'm a peach",
-].join('\n')
+/**
+ * A worked example per base model, because the demonstration only lands if the
+ * example is written in the shape the base model already writes in.
+ *
+ * Both teach the same thing: one small pattern, repeated with different nouns.
+ * The pattern has to be recognisable in the output or the "before and after"
+ * comparison shows two piles of text that merely look different. And it has to
+ * sit inside the base model's own idiom -- the Shakespeare model writes lines of
+ * speech, so the example is lines of speech; the recipe model writes ingredient
+ * lists, so a set of speech lines just gets overridden by the list format and
+ * nothing visible survives. What is being taught is a habit, not a new format.
+ */
+const EXAMPLE_TEXTS: Record<BaseDatasetId, string> = {
+  // The same sixteen lines this page has always used, given the full stop that
+  // every line in the plays ends with. Without it the example is the only text
+  // on the page with no punctuation at all, and the model has to learn both the
+  // new sentence and the unfamiliar habit of never closing one -- which shows up
+  // in the tuned output as lines that run into each other.
+  shakespeare: [
+    'I am a blackboard.',
+    'I am a whiteboard.',
+    'I am a tree.',
+    'I am a human.',
+    'I am a dog.',
+    'I am a cat.',
+    'I am an apple.',
+    'I am a peach.',
+    "I'm a blackboard.",
+    "I'm a whiteboard.",
+    "I'm a tree.",
+    "I'm a human.",
+    "I'm a dog.",
+    "I'm a cat.",
+    "I'm an apple.",
+    "I'm a peach.",
+  ].join('\n'),
+  // Real quantities, real measures, and nothing you can buy. Structured
+  // like the Shakespeare one on purpose: one frame, a small closed set of nouns,
+  // each noun appearing under both frames. A first attempt used fourteen
+  // different nouns once each and the model learned only the connector -- it
+  // wrote "1 cup of bacon" where it used to write "1 tablespoon salt", picking
+  // up the "of" and none of the words. Two hundred characters is enough to teach
+  // a habit, and only enough to teach eight words.
+  recipes: [
+    '1 pinch of patience',
+    '1 pinch of regret',
+    '1 pinch of courage',
+    '1 pinch of silence',
+    '1 pinch of weather',
+    '1 pinch of luck',
+    '1 pinch of doubt',
+    '1 pinch of thunder',
+    '2 cups of patience',
+    '2 cups of regret',
+    '2 cups of courage',
+    '2 cups of silence',
+    '2 cups of weather',
+    '2 cups of luck',
+    '2 cups of doubt',
+    '2 cups of thunder',
+  ].join('\n'),
+}
 
 type FinetuneCorpusProps = {
   baseDatasetId: BaseDatasetId
@@ -95,7 +139,11 @@ export function FinetuneCorpus(props: FinetuneCorpusProps) {
       const repeatable = accepted + separator
       const times = Math.max(1, Math.ceil(requiredCharacters / repeatable.length))
       const padded = repeatable.repeat(times)
-      const next = await CharDataset({ textSource: padded, vocabulary: baseVocabulary })
+      const next = await CharDataset({
+        textSource: padded,
+        vocabulary: baseVocabulary,
+        reserveMaskClass: true,
+      })
       if (requestId !== rebuildId.current) {
         next.dispose()
         return
@@ -158,7 +206,7 @@ export function FinetuneCorpus(props: FinetuneCorpusProps) {
           size={BUTTON_SIZE.compact}
           disabled={disabled}
           onClick={() => {
-            setText(EXAMPLE_TEXT)
+            setText(EXAMPLE_TEXTS[baseDatasetId])
             onTextEdited()
             onChange(undefined)
           }}

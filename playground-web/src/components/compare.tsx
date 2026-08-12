@@ -12,6 +12,7 @@ import { FlexGrid, FlexGridItem } from 'baseui/flex-grid'
 import { ImLoop } from 'react-icons/im'
 import { Notification } from './shared/notification'
 import { BASE_DATASETS, BaseDatasetId } from '../types/playground'
+import { DEFAULT_TEMPERATURE, DEFAULT_TOP_K } from '../config/sampling'
 
 type CompareProps = {
   model: ModelT | undefined
@@ -40,8 +41,8 @@ export function CompareGenerators(props: CompareProps) {
 
   const [inputContext, setInputContext] = React.useState('')
   const [maxNewTokens, setMaxNewTokens] = React.useState(200)
-  const [temperature, setTemperature] = React.useState(1)
-  const [topK, setTopK] = React.useState<number | undefined>()
+  const [temperature, setTemperature] = React.useState(DEFAULT_TEMPERATURE)
+  const [topK, setTopK] = React.useState<number | undefined>(DEFAULT_TOP_K)
   const [doSample, setDoSample] = React.useState(true)
   const [showAdvanced, setShowAdvanced] = React.useState(false)
   const [running, setRunning] = React.useState<Side | undefined>()
@@ -244,13 +245,13 @@ export function CompareGenerators(props: CompareProps) {
           <FlexGridItem>
             <FormControl
               label="Temperature"
-              caption="Higher is more random, lower is more predictable."
+              caption="Higher is more random, lower is more predictable. 0 always takes the most likely character."
             >
               <Input
                 type="number"
                 value={temperature}
                 onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                min={0.1}
+                min={0}
                 max={2}
                 step={0.1}
                 disabled={Boolean(running)}

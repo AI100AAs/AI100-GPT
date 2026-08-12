@@ -14,7 +14,7 @@
  */
 import * as tf from '@tensorflow/tfjs'
 import { Layer, Model, ModelParams, OptimizerParams } from './types'
-import { countParams, dispose, withLayerHelpers, withModelHelpers, yieldToBrowser } from './utils'
+import { countParams, createFrameBudget, dispose, withLayerHelpers, withModelHelpers } from './utils'
 
 // GPT Language Model
 export function GPT(params: ModelParams): Model {
@@ -33,7 +33,7 @@ export function GPT(params: ModelParams): Model {
     drop: tf.layers.dropout({ name: 'drop', rate: embdDropout }),
     add: tf.layers.add({ name: 'add' }), // It will add token and position embeddings
     h: Array.from({ length: nLayer }, (_, i) => Block({ nEmbd, nHead, blockSize, attnDropout, residDropout, nLayer, name: `block${i + 1}`, lora })), // Blocks
-    lnF: tf.layers.layerNormalization({ name: 'lnF' }), // Final normalization layer
+    lnF: new LayerNorm({ name: 'lnF' }), // Final normalization layer
   }
   const lmHead = tf.layers.dense({ name: 'lmHead', units: vocabSize, useBias: false, kernelInitializer })
 
@@ -78,8 +78,23 @@ export function GPT(params: ModelParams): Model {
     // Take a sequence of indices idx (tensor of shape (B, T), with 0 as a mask) and complete the
     // sequence maxNewTokens times, feeding the predictions back into the model each time
     generate: async (params, onGenerateChar) => {
-      const { maxNewTokens, temperature = 1.0, doSample = false, topK } = params
+      const { maxNewTokens, temperature = 1.0, doSample = false, topK, shouldStop } = params
       let { idx } = params
+
+      // Characters are reported in batches on a frame boundary rather than one
+      // at a time. Reading a value back from the GPU drains the command queue
+      // and waits for it, so doing that per character stopped the next step
+      // from being queued while the current one ran -- at this model size the
+      // stall costs more than the arithmetic does. `idx` already holds every
+      // token, so one read per frame recovers all of them.
+      let reported = idx.shape[1]!
+      const flush = async () => {
+        if (!onGenerateChar) return
+        const tokens = await idx.data()
+        for (let j = reported; j < tokens.length; j += 1) onGenerateChar(tokens[j])
+        reported = tokens.length
+      }
+      const yieldFrame = createFrameBudget()
 
       for (let i = 0; i < maxNewTokens; i++) {
         const idxNext = tf.tidy(() => {
@@ -103,10 +118,16 @@ export function GPT(params: ModelParams): Model {
           const lastContextPosition = Math.min(T - 1, blockSize - 1)
           let lastCharLogits = logits.slice([0, lastContextPosition, 0], [-1, 1, -1]).squeeze([1]) // Becomes (B, C)
 
-          // Scale by desired temperature
-          lastCharLogits = tf.div(lastCharLogits, tf.scalar(temperature))
+          // Zero temperature is the limit of the scaling below, not a value it
+          // can take: dividing by zero gives infinities and softmax then returns
+          // NaN. As the temperature falls, all the probability moves onto the
+          // single most likely character, so zero simply means "always take it".
+          const isGreedy = temperature <= 0
 
-          if (topK) {
+          // Scale by desired temperature
+          if (!isGreedy) lastCharLogits = tf.div(lastCharLogits, tf.scalar(temperature))
+
+          if (topK && !isGreedy) {
             const { values } = lastCharLogits.topk(Math.min(topK, vocabSize))
             const smallestTopK = values.slice([0, values.shape[1]! - 1]) // Last element in the array, since topk sorts the values
             lastCharLogits = lastCharLogits.where(lastCharLogits.greaterEqual(smallestTopK), tf.scalar(-Infinity))
@@ -118,7 +139,7 @@ export function GPT(params: ModelParams): Model {
           let idxNext: tf.Tensor
 
           // Either sample from the distribution or take the most likely element
-          if (doSample) {
+          if (doSample && !isGreedy) {
             const backend = tf.getBackend()
             if (backend === 'webgpu') {
               // 1st sample from tf.multinomial is always zero in webgpu backend
@@ -141,16 +162,19 @@ export function GPT(params: ModelParams): Model {
         const idxPrev = idx
         idx = idx.concat(idxNext, 1) // (B, T+1)
 
-        if (onGenerateChar) {
-          const nextToken = ((await idxNext.array()) as number[][])[0][0]
-          onGenerateChar(nextToken)
-        }
-
         dispose([idxNext, idxPrev])
 
         // For browsers: unblock the main thread (allow the UI to be re-rendered)
-        await yieldToBrowser()
+        if (await yieldFrame()) {
+          await flush()
+          // Only ever asked here, where the caller has just been told about the
+          // new characters. Asking every step would mean reading the sequence
+          // back from the GPU every step, which is the stall `flush` exists to
+          // avoid -- a stop sequence is not worth giving up six times the speed.
+          if (shouldStop?.()) break
+        }
       }
+      await flush()
       return idx
     },
 
@@ -216,6 +240,21 @@ export function GPT(params: ModelParams): Model {
       })
     },
 
+    /**
+     * Puts the adapters back to their freshly-built state: `b` zeroed so the
+     * adapter is a no-op again, `a` re-randomised so the first gradient step has
+     * something to work with. Training without this continues from whatever the
+     * previous run left behind.
+     */
+    resetLoRAWeights: () => {
+      for (const block of transformer.h) {
+        for (const adapter of block.getLoRA?.() ?? []) {
+          adapter.a.assign(tf.randomNormal(adapter.a.shape, 0, 0.02))
+          adapter.b.assign(tf.zeros(adapter.b.shape))
+        }
+      }
+    },
+
     setLoRAEnabled: (enabled: boolean) => {
       for (const block of transformer.h) {
         for (const adapter of block.getLoRA?.() ?? []) {
@@ -240,9 +279,9 @@ export function GPT(params: ModelParams): Model {
 function Block(args: { nEmbd: number; nHead: number; blockSize: number; residDropout: number; attnDropout: number; nLayer: number, name: string, lora?: { rank: number; alpha: number } }): Layer {
   const { nEmbd, nHead, blockSize, residDropout, attnDropout, nLayer, name, lora } = args
 
-  const ln1 = tf.layers.layerNormalization({ name: `${name}-ln1` })
+  const ln1 = new LayerNorm({ name: `${name}-ln1` })
   const attn = CausalSelfAttention({ name: `${name}-attn`, nEmbd, blockSize, nHead, residDropout, attnDropout, nLayer, lora }) // Self-attention head
-  const ln2 = tf.layers.layerNormalization({ name: `${name}-ln2` })
+  const ln2 = new LayerNorm({ name: `${name}-ln2` })
   const mlp = FeedForward({ name: `${name}-mlp`, nEmbd, residDropout, nLayer })
 
   const block = {
@@ -328,9 +367,15 @@ function CausalSelfAttention(args: { nEmbd: number; blockSize: number; nHead: nu
   const attnDrop = tf.layers.dropout({ name: `${name}-attnDrop`, rate: attnDropout })
   const residDrop = tf.layers.dropout({ name: `${name}-residDrop`, rate: residDropout })
 
-  // Causal mask to ensure that attention is only applied to the left in the input sequence
-  // Create a lower triangular matrix (the equivalent of torch.tril)
-  const bias = tf.linalg.bandPart(tf.ones([blockSize, blockSize]), -1, 0).reshape([1, 1, blockSize, blockSize])
+  // Causal mask to ensure that attention is only applied to the left in the input sequence.
+  // Built once, in the additive form softmax wants: 0 where a position may be
+  // attended to, -Infinity where it may not, so masking is a single add. The
+  // lower-triangular matrix is the equivalent of torch.tril.
+  const bias = tf.tidy(() => {
+    const tril = tf.linalg.bandPart(tf.ones([blockSize, blockSize]), -1, 0)
+    return tf.where(tril.equal(0), tf.fill([blockSize, blockSize], -Infinity), tf.zeros([blockSize, blockSize]))
+      .reshape([1, 1, blockSize, blockSize])
+  })
 
   const multiHeadAttention: Layer = {
     apply: (x: tf.Tensor): tf.Tensor => tf.tidy(() => {
@@ -344,7 +389,9 @@ function CausalSelfAttention(args: { nEmbd: number; blockSize: number; nHead: nu
 
       // Compute attention scores ("affinities")
       let att = tf.matMul(q, k.transpose([0, 1, 3, 2])).mul(tf.scalar(1 / Math.sqrt(headSize))) // (B, nh, T, hs) @ (B, nh, hs, T) -> (B, nh, T, T)
-      att = tf.where(bias.slice([0, 0, 0, 0], [1, 1, T, T]).equal(0), tf.scalar(-Infinity), att) // (B, nh, T, T)
+      // The whole mask is used unchanged in the usual case (T is the block size),
+      // which keeps the slice out of the per-step path entirely.
+      att = att.add(T === blockSize ? bias : bias.slice([0, 0, 0, 0], [1, 1, T, T])) // (B, nh, T, T)
       att = tf.softmax(att) // (B, nh, T, T)
       att = attnDrop.apply(att) as tf.Tensor
       let y = tf.matMul(att, v) // (B, nh, T, T) @ (B, nh, T, hs) -> (B, nh, T, hs)
@@ -392,6 +439,63 @@ function FeedForward(args: { nEmbd: number; residDropout: number; nLayer: number
   }
 
   return withLayerHelpers(ffwd, [cFc, cProj, drop])
+}
+
+/**
+ * Layer normalization, written out rather than taken from `tf.layers`.
+ *
+ * `tf.layers.layerNormalization` broadcasts gamma and beta to the full input
+ * shape and hands the result to the fused batch-norm kernel. That is fine going
+ * forwards, but the gradient of that fused op is expanded into a loop over the
+ * embedding dimension: measured on the Micro model, one layer normalization
+ * costs 591 operations backwards -- 256 of them slices -- against 73 for the
+ * arithmetic below. With nine of them in the model, that loop accounted for
+ * about seventy per cent of every training step.
+ *
+ * This is the same formula with the same defaults (epsilon 1e-3, last axis) and
+ * the same two weights in the same order, so pretrained checkpoints load into it
+ * unchanged.
+ */
+class LayerNorm extends tf.layers.Layer {
+  static className = 'GPTLayerNorm'
+  private readonly epsilon: number
+  private gamma!: tf.LayerVariable
+  private beta!: tf.LayerVariable
+
+  constructor(args: { name: string; epsilon?: number }) {
+    super(args)
+    this.epsilon = args.epsilon ?? 1e-3
+  }
+
+  build(inputShape: tf.Shape | tf.Shape[]) {
+    const shape = (Array.isArray(inputShape[0]) ? inputShape[0] : inputShape) as tf.Shape
+    const size = shape[shape.length - 1]
+    if (size == null) throw new Error('LayerNorm needs a known last dimension')
+    // Order matters: checkpoints store the weights of a layer as a plain list.
+    this.gamma = this.addWeight('gamma', [size], 'float32', tf.initializers.ones(), undefined, true)
+    this.beta = this.addWeight('beta', [size], 'float32', tf.initializers.zeros(), undefined, true)
+    this.built = true
+  }
+
+  computeOutputShape(inputShape: tf.Shape | tf.Shape[]) {
+    return inputShape
+  }
+
+  call(inputs: tf.Tensor | tf.Tensor[]): tf.Tensor {
+    return tf.tidy(() => {
+      const x = Array.isArray(inputs) ? inputs[0] : inputs
+      const { mean, variance } = tf.moments(x, -1, true)
+      return x
+        .sub(mean)
+        .mul(tf.rsqrt(variance.add(this.epsilon)))
+        .mul(this.gamma.read())
+        .add(this.beta.read())
+    })
+  }
+
+  getClassName() {
+    return LayerNorm.className
+  }
 }
 
 // Init all weights, and apply a special scaled init to the residual projections, per GPT-2 paper

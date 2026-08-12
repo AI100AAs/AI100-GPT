@@ -68,8 +68,13 @@ export type Model = {
    *
    * @param doSample - controls the trade-off between creativity (`true`, random sampling) and
    * predictability (`false`, choosing the most probable token) in text generation.
+   *
+   * @param shouldStop - asked, between batches of characters, whether generation
+   * has reached a natural end (a stop sequence, say). It is only consulted on a
+   * frame boundary, so up to a frame's worth of extra characters may be produced
+   * after it first returns true; the caller is expected to trim them.
    */
-  generate: (args: { idx: tf.Tensor; maxNewTokens: number; temperature?: number; doSample?: boolean; topK?: number }, onGenerateChar?: (token: number) => void) => Promise<tf.Tensor>
+  generate: (args: { idx: tf.Tensor; maxNewTokens: number; temperature?: number; doSample?: boolean; topK?: number; shouldStop?: () => boolean }, onGenerateChar?: (token: number) => void) => Promise<tf.Tensor>
   loss: (x: tf.Tensor, y: tf.Tensor) => tf.Tensor
   optimizer: (params: OptimizerParams) => tf.Optimizer
   build: () => void
@@ -88,6 +93,8 @@ export type Model = {
    * comparison possible without holding two copies in memory.
    */
   setLoRAEnabled?: (enabled: boolean) => void
+  /** Discards everything the adapters have learned so far. */
+  resetLoRAWeights?: () => void
   /** Just the adapter matrices -- small enough to share as a file. */
   getLoRAWeights?: () => LoRAWeights
   setLoRAWeights?: (weights: LoRAWeights) => void
@@ -124,6 +131,29 @@ export type DatasetParams = {
    * cannot be represented and are dropped (see `droppedCharacters`).
    */
   vocabulary?: string[]
+  /**
+   * Give up one output class to the padding token.
+   *
+   * With `maskZero` the first character of the alphabet encodes as token 1, not
+   * 0, because 0 means "nothing here" -- so the tokens run 1..N for an alphabet
+   * of N characters. A model built with N output classes can only ever produce
+   * 0..N-1, which is one short: the last character of the alphabet has no class
+   * that maps to it, and it can be neither predicted nor learned. (It cannot be
+   * read either -- its token indexes one row past the end of the embedding
+   * table.)
+   *
+   * Setting this makes the arithmetic come out. The vocabulary is one character
+   * shorter than the model's class count, so tokens 1..N cover the whole
+   * alphabet and class 0 is left to mean the padding it always stood for. When
+   * the character set is derived from the text, the last character in sort order
+   * is the one given up; when it is supplied, it is assumed to be correct
+   * already and only the reported `vocabSize` changes.
+   *
+   * Only for models that use a token index shift of zero, which is how the
+   * pretrained checkpoints here were made. A model shifted by one already lines
+   * its classes up with tokens 1..N and needs none of this.
+   */
+  reserveMaskClass?: boolean
 }
 
 export type DatasetGetBatchParams = {
@@ -141,8 +171,9 @@ export type Dataset = {
   text: string
   /**
    * How many characters of the source text could not be encoded because they
-   * were absent from a supplied vocabulary. Always 0 when the vocabulary is
-   * derived from the text itself.
+   * were absent from the alphabet -- either a supplied vocabulary, or a derived
+   * one that gave up its last character to `reserveMaskClass`. Zero for a
+   * derived alphabet otherwise, which covers its text by construction.
    */
   droppedCharacters: number
   getBatch: (args: DatasetGetBatchParams) => { x: tf.Tensor; y: tf.Tensor }

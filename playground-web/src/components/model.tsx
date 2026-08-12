@@ -14,7 +14,7 @@ import { RiDownloadLine } from 'react-icons/ri'
 import { useSnackbar } from 'baseui/snackbar'
 import { FaCheck } from 'react-icons/fa'
 import { Card } from 'baseui/card'
-import { MODEL_WEIGHTS_BASE_URL } from '../config/links'
+import { loadWeights } from '../utils/weights'
 
 type ModelProps = {
   model: ModelT | undefined
@@ -108,11 +108,7 @@ export function Model(props: ModelProps) {
           ? MODEL_WEIGHTS[nextModelVariant]?.[weightsDatasetId]
           : undefined
         if (weightsFileName && nextModel.setWeights) {
-          const response = await fetch(`${MODEL_WEIGHTS_BASE_URL}${weightsFileName}`)
-          if (!response.ok) {
-            throw new Error(`Could not load ${nextModelVariant} weights: ${response.statusText}`)
-          }
-          const weights = await response.json()
+          const loadedWeights = await loadWeights(weightsFileName)
 
           // Dataset changes can finish while pretrained weights are downloading.
           // Never apply Shakespeare weights to a model built for a custom vocabulary.
@@ -124,7 +120,7 @@ export function Model(props: ModelProps) {
             nextModel.dispose?.()
             return
           }
-          nextModel.setWeights(weights)
+          nextModel.setWeights(loadedWeights)
         }
 
         if (

@@ -20,6 +20,7 @@ import { Notification } from './shared/notification'
 import { useSnackbar } from 'baseui/snackbar'
 import { FaCheck } from 'react-icons/fa'
 import { RiDownloadLine } from 'react-icons/ri'
+import { DEFAULT_TEMPERATURE, DEFAULT_TOP_K } from '../config/sampling'
 
 type GeneratorProps = {
   dataset: Dataset | undefined
@@ -103,13 +104,13 @@ export function Generator(props: GeneratorProps) {
   const [isLoadingWeights, setIsLoadingWeights] = React.useState<boolean>(false)
 
   const [maxNewTokens, setMaxNewTokens] = React.useState<number>(200)
-  const [temperature, setTemperature] = React.useState<number>(1)
+  const [temperature, setTemperature] = React.useState<number>(DEFAULT_TEMPERATURE)
   const [doSample, setDoSample] = React.useState<boolean>(true)
   const [inputContext, setInputContext] = React.useState<string>('')
   const [errorMessage, setErrorMessage] = React.useState<string>()
   const [showAdvanced, setShowAdvanced] = React.useState<boolean>(false)
 
-  const [topK, setTopK] = React.useState<number>()
+  const [topK, setTopK] = React.useState<number | undefined>(DEFAULT_TOP_K)
 
   const [maxNewTokensErr, setMaxNewTokensErr] = React.useState<string>()
   const [temperatureErr, setTemperatureErr] = React.useState<string>()
@@ -244,8 +245,13 @@ export function Generator(props: GeneratorProps) {
     }
 
     try {
-      if (!temperature) {
+      // Zero is a meaningful setting (always take the most likely character),
+      // so only a blank or negative box is an error.
+      if (temperature === undefined || Number.isNaN(temperature)) {
         throw new Error('Cannot be empty')
+      }
+      if (temperature < 0) {
+        throw new Error('Cannot be negative')
       }
       setTemperatureErr(undefined)
     } catch (err) {
@@ -488,7 +494,7 @@ export function Generator(props: GeneratorProps) {
                 <FlexGridItem>
                   <FormControl
                     label="Temperature"
-                    caption="The degree of randomness in token selection. Higher temperatures can lead to more creative or sometimes hallucinated results."
+                    caption="The degree of randomness in token selection. Higher temperatures can lead to more creative or sometimes hallucinated results. Set it to 0 to always take the most likely character, which makes the same starting text always produce the same output."
                     disabled={isFormDisabled}
                     error={temperatureErr}
                   >
@@ -496,7 +502,7 @@ export function Generator(props: GeneratorProps) {
                       type="number"
                       value={temperature}
                       onChange={(e) => setTemperature(parseFloat(e.target.value))}
-                      min={0.1}
+                      min={0}
                       max={2}
                       step={0.1}
                       disabled={isFormDisabled}

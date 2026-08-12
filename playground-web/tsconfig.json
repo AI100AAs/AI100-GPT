@@ -1,6 +1,11 @@
 {
   "compilerOptions": {
-    "target": "es5",
+    // Not es5 (the Create React App default): the model defines a custom
+    // tf.layers layer, and a class downlevelled to an ES5 function cannot extend
+    // TensorFlow's native class -- it fails at runtime with "Class constructor
+    // Layer cannot be invoked without 'new'". Nothing here can run on a browser
+    // without WebGL or WebGPU anyway.
+    "target": "es2017",
     "lib": ["dom", "dom.iterable", "esnext"],
     "allowJs": true,
     "skipLibCheck": true,

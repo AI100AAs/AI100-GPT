@@ -12,7 +12,13 @@ import { Dataset, DatasetGetBatchParams, DatasetParams } from './types'
 
 // Creates a character-level dataset, where each letter is a token.
 export async function CharDataset(args: DatasetParams): Promise<Dataset> {
-  const { textSourceURL, textSource = '', maskZero = true, vocabulary } = args
+  const {
+    textSourceURL,
+    textSource = '',
+    maskZero = true,
+    vocabulary,
+    reserveMaskClass = false,
+  } = args
 
   // Whether to use 0-based or 1-based (0 is for masking) index.
   const indexShift = maskZero ? 1 : 0
@@ -29,14 +35,21 @@ export async function CharDataset(args: DatasetParams): Promise<Dataset> {
   // A supplied vocabulary comes from a model that is already trained, so it is
   // fixed: characters missing from it have no embedding and are dropped rather
   // than silently mapped onto some other character.
-  const chars: string[] = vocabulary ?? Array.from(new Set(rawText)).sort()
+  const derived = Array.from(new Set(rawText)).sort()
+  // See `reserveMaskClass`: the alphabet has to be one character shorter than
+  // the model's class count, and the character given up is the last in sort
+  // order -- chosen because dropping it leaves every other character's index
+  // exactly where it was, so weights trained before the change still fit.
+  const chars: string[] =
+    vocabulary ?? (reserveMaskClass ? derived.slice(0, -1) : derived)
   const known = new Set(chars)
-  const text: string = vocabulary
-    ? Array.from(rawText).filter((ch) => known.has(ch)).join('')
-    : rawText
+  // A derived alphabet used to cover the text by construction. It no longer
+  // does once a character has been given up, so the same filtering that a
+  // supplied vocabulary gets now applies to both.
+  const text: string = Array.from(rawText).filter((ch) => known.has(ch)).join('')
   const droppedCharacters = rawText.length - text.length
   const textSize: number = text.length
-  const vocabSize: number = chars.length
+  const vocabSize: number = chars.length + (reserveMaskClass ? 1 : 0)
 
   // An empty dataset is tolerated on purpose: the custom-text field starts empty
   // and the dataset is rebuilt as soon as something is typed into it. Throwing
@@ -46,16 +59,39 @@ export async function CharDataset(args: DatasetParams): Promise<Dataset> {
   const stoi = Object.fromEntries(chars.map((ch, i) => [ch, i + indexShift]))
   const itos = Object.fromEntries(chars.map((ch, i) => [i + indexShift, ch]))
 
-  const encode = (s: string) => s.split('').filter((c) => c in stoi).map((c) => stoi[c])
+  // One pass, no intermediate arrays. `split('').filter().map()` walked a
+  // million-character corpus three times and allocated two throwaway arrays
+  // doing it; this is roughly twice as fast on the bundled datasets.
+  const encode = (s: string) => {
+    const out: number[] = []
+    for (let i = 0; i < s.length; i += 1) {
+      const id = stoi[s[i]]
+      if (id !== undefined) out.push(id)
+    }
+    return out
+  }
+
+  // Same walk, straight into the typed array tf.tensor wants, so the corpus
+  // never exists as a boxed JS number array.
+  const encodeToTypedArray = (s: string) => {
+    const out = new Int32Array(s.length)
+    let n = 0
+    for (let i = 0; i < s.length; i += 1) {
+      const id = stoi[s[i]]
+      if (id !== undefined) out[n++] = id
+    }
+    return out.subarray(0, n)
+  }
   // Index 0 is the padding/mask token and anything outside the vocabulary has no
   // character at all. Dropping those is important: `[undefined].join('')` yields
   // the literal text "undefined", which would be shown to the reader as output.
   const decode = (a: number[]) => a.map((i) => itos[i] ?? '').join('')
 
   // Train and test splits
-  const data = tf.tensor(encode(text), [textSize], 'int32')
+  const encoded = encodeToTypedArray(text)
+  const data = tf.tensor1d(encoded, 'int32')
   const dataSize: number = data.shape[0]
-  const n = Math.floor(0.9 * textSize)
+  const n = Math.floor(0.9 * dataSize)
   const trainData: tf.Tensor = data.slice(0, n)
   const valData: tf.Tensor = data.slice(n)
 

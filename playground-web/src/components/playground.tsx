@@ -3,6 +3,9 @@ import { Dataset as DatasetT, Model as ModelT, ModelVariant } from '@gpt/model'
 import { Backend } from './backend'
 import { FinetuneCorpus } from './finetune'
 import { CompareGenerators } from './compare'
+import { Chat } from './chat'
+import { Scale } from './scale'
+import { FutureWork } from './future-work'
 import { StyleFile } from './style-file'
 import { Tabs, Tab, FILL } from 'baseui/tabs-motion'
 import { FlexGrid, FlexGridItem } from 'baseui/flex-grid'
@@ -22,6 +25,10 @@ import { RiDownloadLine } from 'react-icons/ri'
 import { FormControl } from 'baseui/form-control'
 import { Notification } from './shared/notification'
 
+// Notes for whoever maintains this next, not for the students using it. The tab
+// is kept wired up so it can be turned back on while working on the playground.
+const SHOW_IDEAS = false
+
 export function Playground() {
   // The technical view (backend picker, dataset measurements, training controls,
   // debugger) is kept in the code but hidden from the student interface. Flip
@@ -32,11 +39,22 @@ export function Playground() {
   // Models are always built with adapters attached. Before training they are an
   // exact no-op, so the pretrained model generates unchanged; afterwards the same
   // model carries the learner's style. That avoids rebuilding between steps.
+  // Enough capacity to pick up a voice from a dozen lines, and small enough that
+  // training stays quick. The Chat tab uses the same rank, having tried a larger
+  // one: at rank 16 its adapter recites its training answers instead of writing
+  // new ones, which is a worse thing to show.
+  // Note that a style file records the rank it was trained at and will not load
+  // into a model built with a different one, so changing this invalidates any
+  // previously saved file.
   const loraRank = 8
   // The learner's own text, encoded with the base model's character set.
   const [corpus, setCorpus] = React.useState<DatasetT>()
   const [activeTab, setActiveTab] = React.useState<string>('explore')
   const [hasTrainedStyle, setHasTrainedStyle] = React.useState(false)
+  // Whether the adapters themselves hold a trained style. Distinct from
+  // `hasTrainedStyle`, which the UI clears as soon as the text is edited: the
+  // weights survive that, so training again would quietly build on them.
+  const [hasStyleInModel, setHasStyleInModel] = React.useState(false)
   const [isTrainingStyle, setIsTrainingStyle] = React.useState(false)
   const [styleDraftRevision, setStyleDraftRevision] = React.useState(0)
   const [styleMessage, setStyleMessage] = React.useState<{
@@ -84,6 +102,8 @@ export function Playground() {
     // attached while the new checkpoint is loading.
     onCorpusChange(undefined)
     setHasTrainedStyle(false)
+    // A new base means a new model object, so its adapters start empty again.
+    setHasStyleInModel(false)
     setStyleMessage(undefined)
 
     dataset?.dispose?.()
@@ -159,6 +179,7 @@ export function Playground() {
         model.setLoRAWeights(parsed)
         model.setLoRAEnabled?.(true)
         setHasTrainedStyle(true)
+        setHasStyleInModel(true)
         setStyleMessage({ kind: 'positive', text: 'Style loaded. Open Compare to try it.' })
       } catch (err) {
         setStyleMessage({ kind: 'negative', text: (err as Error).message })
@@ -252,7 +273,7 @@ export function Playground() {
             disabled={isTrainingStyle}
             overrides={TAB_OVERRIDES}
           >
-            <Step title="Choose a style">
+            <Step title="Choose a style — the whole page follows this">
               <Dataset
                 dataset={dataset}
                 onChange={onDatasetChange}
@@ -303,7 +324,11 @@ export function Playground() {
                       setStyleMessage(undefined)
                     }
                   }}
-                  onTrainingComplete={() => setHasTrainedStyle(true)}
+                  onTrainingComplete={() => {
+                    setHasTrainedStyle(true)
+                    setHasStyleInModel(true)
+                  }}
+                  hasExistingStyle={hasStyleInModel}
                 />
               </Block>
 
@@ -363,6 +388,31 @@ export function Playground() {
               />
             </Step>
           </Tab>
+
+          <Tab
+            key="chat"
+            title="Chat"
+            disabled={isTrainingStyle}
+            overrides={TAB_OVERRIDES}
+          >
+            <Step title="Talk to it">
+              <Chat backend={backend} styleId={baseDatasetId} />
+            </Step>
+          </Tab>
+
+          <Tab key="scale" title="How big is this?" overrides={TAB_OVERRIDES}>
+            <Step title="This model next to the ones you have used">
+              <Scale />
+            </Step>
+          </Tab>
+
+          {SHOW_IDEAS && (
+            <Tab key="ideas" title="Ideas" overrides={TAB_OVERRIDES}>
+              <Step title="Ideas for future versions">
+                <FutureWork />
+              </Step>
+            </Tab>
+          )}
 
         </Tabs>
 

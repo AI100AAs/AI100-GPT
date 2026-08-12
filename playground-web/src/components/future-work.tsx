@@ -17,14 +17,9 @@ const IDEAS: Idea[] = [
       'While the model writes, display the handful of characters it was choosing between and how likely each one was. This is the closest thing to showing next-token prediction happening, and it mirrors the counting table and spinning wheel used in the lecture — the same idea, learned from data rather than tallied by hand.',
   },
   {
-    title: 'Before and after, side by side',
-    detail:
-      'Pin the output from the untouched model next to the output from the adapted one for the same starting text, so the blend can be compared directly instead of remembered.',
-  },
-  {
     title: 'A temperature slider that regenerates live',
     detail:
-      'Dragging from low to high and watching the text go from repetitive loops to noise makes randomness tangible in a way a number in a box does not.',
+      'Temperature can be typed in under the settings, but nothing happens until the next run. Dragging a slider and watching the text go from repetitive loops to noise makes randomness tangible in a way a number in a box does not.',
   },
   {
     title: 'Instruction tuning',
@@ -40,11 +35,6 @@ const IDEAS: Idea[] = [
     title: 'Let the alphabet grow during fine-tuning',
     detail:
       'Characters outside the base model’s vocabulary are currently dropped. New rows could be added to the embedding and output layers and trained alongside the adapter, so emoji and digits survive. New characters start from nothing, so they need plenty of examples to become useful.',
-  },
-  {
-    title: 'Share and load a trained adapter',
-    detail:
-      'The adapter is about three percent of the model. Exporting it is already possible; being able to load a classmate’s file would make that smallness concrete and let styles be swapped around.',
   },
   {
     title: 'Bring back the larger and smaller models',
