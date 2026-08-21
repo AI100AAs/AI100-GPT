@@ -2,7 +2,7 @@
   "name": "@playground/web",
   "version": "0.0.1",
   "author": "Oleksii Trekhleb (https://trekhleb.dev)",
-  "homepage": "/AI100-GPT",
+  "homepage": ".",
   "scripts": {
     "build": "craco build",
     "start": "craco start"
